@@ -607,8 +607,107 @@ export async function correctQueryWithGoogle(rawQuery: string): Promise<GoogleCo
 }
 
 /**
- * Busca y resuelve el video musical exacto a partir del buscador de Google y YouTube,
- * utilizando el corrector ortográfico de Google como paso inicial.
+/**
+ * Realiza una búsqueda directa en Google.com (sección Videos: tbm=vid) con la frase
+ * completa ingresada por el usuario SIN modificaciones ni correcciones artificiales.
+ * Extrae los videos musicales de YouTube proporcionados directamente por Google.
+ */
+export async function scrapeGoogleVideosSection(
+  phrase: string,
+  limit: number = 14
+): Promise<CatalogTrack[]> {
+  const query = phrase.trim();
+  if (!query) return [];
+
+  const url = `https://www.google.com/search?q=${encodeURIComponent(query)}&tbm=vid&hl=es`;
+  console.log(`[GoogleVideos] 🌐 Consultando Google.com (sección Videos) con la frase completa sin correcciones: "${query}"`);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 4500);
+
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': 'Opera/9.80 (J2ME/MIDP; Opera Mini/4.2.14912/870; U; id) Presto/2.4.15 Version/10.00',
+        'Accept': 'text/html,*/*',
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+      }
+    });
+
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      console.warn(`[GoogleVideos] HTTP ${res.status} al consultar Google Videos.`);
+      return [];
+    }
+
+    const text = await res.text();
+    const re = /<a[^>]*href=\"([^\"]*)\"[^>]*>([\s\S]*?)<\/a>/gi;
+    const items: CatalogTrack[] = [];
+    const seen = new Set<string>();
+    let match;
+
+    while ((match = re.exec(text)) !== null) {
+      const rawHref = match[1].replace(/&amp;/g, '&');
+      const decodedHref = decodeURIComponent(rawHref);
+
+      if (!decodedHref.includes('youtube.com/watch') && !decodedHref.includes('youtu.be/')) {
+        continue;
+      }
+
+      const mId = decodedHref.match(/(?:watch\?v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/);
+      if (!mId) continue;
+      const videoId = mId[1];
+      if (seen.has(videoId)) continue;
+
+      const rawTitle = match[2].replace(/<[^>]+>/g, '').trim();
+      if (!rawTitle || rawTitle.length < 2 || rawTitle.toLowerCase().startsWith('http')) continue;
+
+      seen.add(videoId);
+      const cleanTitle = rawTitle
+        .replace(/\s*-\s*YouTube.*$/i, '')
+        .replace(/www\.youtube\.com.*$/i, '')
+        .replace(/^[0-9]+:\s*/, '')
+        .trim();
+
+      // Descartar contenido no musical evidente (podcasts, gameplays) y videos de baja resolución
+      if (isNonMusicVideo(cleanTitle)) continue;
+      if (/\b(?:240p|360p|144p|low\s*quality|low\s*res|baja\s*calidad)\b/i.test(cleanTitle)) continue;
+
+      let title = cleanTitle;
+      let artist = '';
+      if (cleanTitle.includes(' - ')) {
+        const parts = cleanTitle.split(' - ');
+        artist = parts[0].trim();
+        title = parts.slice(1).join(' - ').trim();
+      } else {
+        artist = query;
+      }
+
+      items.push({
+        id: videoId,
+        title: title || cleanTitle,
+        artist: artist || 'YouTube',
+        thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+        duration: '3:45'
+      });
+
+      if (items.length >= limit) break;
+    }
+
+    console.log(`[GoogleVideos] ✅ Google Videos devolvió ${items.length} videos musicales de YouTube para "${query}".`);
+    return items;
+  } catch (err: any) {
+    clearTimeout(timer);
+    console.warn(`[GoogleVideos] Error o timeout al consultar Google Videos: ${err?.message}`);
+    return [];
+  }
+}
+
+/**
+ * Busca y resuelve el video musical exacto a partir del buscador de Google.com (sección Videos),
+ * buscando la frase completa ingresada por el usuario sin correcciones ni deformaciones.
  */
 export async function searchGoogleForVideo(
   rawQuery: string,
@@ -621,186 +720,88 @@ export async function searchGoogleForVideo(
   duration: string;
   items?: CatalogTrack[];
 } | null> {
-  const clean = cleanSearchQuery(rawQuery).trim();
-  if (!clean) return null;
+  const query = rawQuery.trim();
+  if (!query) return null;
 
-  // 1. Corrector ortográfico de Google (Google Search & Suggest Corrector)
-  const correction = await correctQueryWithGoogle(clean);
-  const effectiveQuery = correction.correctedQuery || clean;
+  console.log(`[GoogleSearch] 🔍 Buscando frase completa SIN correcciones en Google.com sección Videos: "${query}" (isArtistOnly: ${isArtistOnly})`);
 
-  console.log(`[GoogleSearch] 🔍 Buscando en Google/YouTube: "${effectiveQuery}" (Original: "${rawQuery}", isArtistOnly: ${isArtistOnly})`);
+  // 1. Consultar Google.com sección Videos con la frase completa sin correcciones
+  let googleVideos = await scrapeGoogleVideosSection(query, 14);
 
-  try {
-    // 2. Búsqueda directa en YouTube con la consulta verificada por Google
-    // Enriquecer la consulta con términos musicales para garantizar que YouTube devuelva música real y no podcasts/gameplays
-    const hasMusicHint = /(cancion|canción|tema|audio|video|official|oficial|letra|lyrics|musica|música|album|disco|remix|en vivo|live|acoustic|acustico|greatest hits|exitos|éxitos)/i.test(effectiveQuery);
-    const searchQuery = isArtistOnly
-      ? (hasMusicHint ? effectiveQuery : `${effectiveQuery} greatest hits video oficial`)
-      : (hasMusicHint ? effectiveQuery : `${effectiveQuery} video oficial`);
+  // 2. Si Google Videos devolvió resultados, usar el primer video musical que Google proporciona
+  if (googleVideos.length > 0) {
+    let topTrack = googleVideos[0];
 
-    const directVideos = await scrapeYouTubeVideos(searchQuery, 14);
-
-    // Filtrar estrictamente cualquier resultado que no sea música
-    const musicOnlyVideos = directVideos.filter(v => !isNonMusicVideo(v.title, v.duration));
-    const candidateList = musicOnlyVideos.length > 0 ? musicOnlyVideos : directVideos;
-
-    if (candidateList.length > 0) {
-      // Contexto de la petición de voz (título, artista, fonética ES<->EN, variante)
-      const contextoVoz: ContextoPuntuacion = {
-        intent: analizarPeticionVoz(rawQuery),
-        consultaOriginal: rawQuery,
-        variante: effectiveQuery
-      };
-      // Calificar y ordenar candidatos para seleccionar la pista de música exacta
-      const scored = candidateList.map((item, idx) => ({
-        item,
-        score: scoreCandidateVideo(item, effectiveQuery, idx, contextoVoz)
-      }));
-      scored.sort((a, b) => b.score - a.score);
-      let topTrack = scored[0].item;
-
-      // Verificación en tiempo real anti-restricción de edad para el video #1:
-      // Solo si el video oficial seleccionado está marcado con LOGIN_REQUIRED o restricción de edad,
-      // el sistema lo sustituye automáticamente por la versión de audio/topic limpia de LA MISMA CANCIÓN.
-      const isTopRestricted = await isYouTubeVideoRestricted(topTrack.id);
-      if (isTopRestricted) {
-        console.warn(`[GoogleSearch] 🛡️ El video oficial "${topTrack.title}" (${topTrack.id}) tiene restricción de edad. Buscando copia sin restricción de la MISMA canción...`);
-
-        const { pureSong, pureArtist } = parseTrackInfo(topTrack.title, topTrack.artist);
-        const searchBaseSong = pureSong || limpiarNombreCancion(effectiveQuery);
-        const searchBaseArtist = pureArtist || '';
-
-        // Buscar alternativas limpias (audio/topic/lyrics) de LA MISMA CANCIÓN sin la etiqueta que causó restricción
-        const altQueries = [
-          `${searchBaseArtist} ${searchBaseSong} audio`.trim(),
-          `${searchBaseArtist} ${searchBaseSong} topic`.trim(),
-          `${searchBaseSong} topic`.trim(),
-          `${searchBaseArtist} ${searchBaseSong} lyrics`.trim(),
-          `${searchBaseArtist} ${searchBaseSong}`.trim()
-        ].filter((q, i, arr) => q.length > 2 && arr.indexOf(q) === i);
-
-        const candidatePool: CatalogTrack[] = [];
-        const seenCandidateIds = new Set<string>([topTrack.id]);
-
-        // 1. Incluir también los otros candidatos iniciales que no sean el topTrack restringido
-        for (let i = 1; i < scored.length; i++) {
-          const item = scored[i].item;
-          if (item && item.id && !seenCandidateIds.has(item.id)) {
-            seenCandidateIds.add(item.id);
-            candidatePool.push(item);
-          }
-        }
-
-        // 2. Obtener candidatos de las consultas limpias (audio, topic, lyrics)
-        for (const fq of altQueries) {
-          try {
-            const items = await scrapeYouTubeVideos(fq, 8);
-            for (const it of items) {
-              if (it && it.id && !seenCandidateIds.has(it.id)) {
-                seenCandidateIds.add(it.id);
-                candidatePool.push(it);
-              }
-            }
-          } catch {}
-          if (candidatePool.length >= 25) break;
-        }
-
-        // 3. Filtrar y calificar rigurosamente para garantizar que sea LA MISMA CANCIÓN
-        const viableAlternatives = candidatePool
-          .filter(cand =>
-            !isEmbedRestrictedChannel(cand.artist, cand.title) &&
-            !isNonMusicVideo(cand.title, cand.duration) &&
-            !hasAgeRestrictionMarkers(cand.title, cand.artist) &&
-            isExactSameSong(cand, searchBaseSong, searchBaseArtist)
-          )
-          .map(cand => ({
-            cand,
-            score: scoreAlternativeCandidate(cand, searchBaseSong, searchBaseArtist)
-          }))
-          .sort((a, b) => b.score - a.score);
-
-        // 4. Elegir la mejor alternativa confirmada libre de restricciones
-        let foundCleanSameSong: CatalogTrack | null = null;
-        for (const alt of viableAlternatives) {
-          if (alt.score <= -500) break;
-          const restricted = await isYouTubeVideoRestricted(alt.cand.id);
-          if (!restricted) {
-            foundCleanSameSong = alt.cand;
-            console.log(`[GoogleSearch] ✅ Encontrada versión alternativa de la MISMA canción: "${alt.cand.title}" [${alt.cand.artist}] (${alt.cand.id})`);
-            break;
-          }
-        }
-
-        if (foundCleanSameSong) {
-          topTrack = foundCleanSameSong;
-        } else {
-          console.warn(`[GoogleSearch] No se encontró copia alternativa verificada; se mantiene "${topTrack.title}" para no cambiar de tema.`);
-        }
+    // Verificación en tiempo real anti-restricción de edad
+    const isTopRestricted = await isYouTubeVideoRestricted(topTrack.id);
+    if (isTopRestricted) {
+      console.warn(`[GoogleSearch] 🛡️ El video "${topTrack.title}" (${topTrack.id}) de Google tiene restricción de edad. Usando alternativa limpia...`);
+      const viableAlt = googleVideos.slice(1).find(v => !hasAgeRestrictionMarkers(v.title, v.artist));
+      if (viableAlt) {
+        topTrack = viableAlt;
       }
+    }
 
-      console.log(`[GoogleSearch] 🎯 Video musical resuelto #1: "${topTrack.title}" (${topTrack.id}) - Artista: "${topTrack.artist}"`);
+    console.log(`[GoogleSearch] 🎯 Video musical resuelto en Google Videos #1: "${topTrack.title}" (${topTrack.id}) - Artista: "${topTrack.artist}"`);
 
-      const fullPlaylist: CatalogTrack[] = [topTrack];
-      const seenIds = new Set<string>([topTrack.id]);
+    // Construir la cola continua con los videos devueltos por Google
+    const fullPlaylist: CatalogTrack[] = [topTrack];
+    const seenIds = new Set<string>([topTrack.id]);
 
-      // Función de deduplicación estricta para evitar cualquier repetición de la misma canción y contenido no musical
-      const isDuplicate = (cand: CatalogTrack): boolean => {
-        if (!cand || !cand.id || seenIds.has(cand.id)) return true;
-        if (isEmbedRestrictedChannel(cand.artist, cand.title)) return true;
-        if (isCompilationOrMix(cand.title) || isNonMusicVideo(cand.title, cand.duration)) return true;
+    for (const item of googleVideos.slice(1)) {
+      if (item && item.id && !seenIds.has(item.id)) {
+        seenIds.add(item.id);
+        fullPlaylist.push(item);
+      }
+    }
 
-        // Descartar si es una versión repetida de la canción inicial (#1)
-        if (!isArtistOnly && areSameSong(cand.title, topTrack.title, effectiveQuery)) {
-          return true;
-        }
-
-        // Descartar si ya existe una versión de esta misma canción en la cola
-        for (const existing of fullPlaylist) {
-          if (areSameSong(cand.title, existing.title)) {
-            return true;
-          }
-        }
-        return false;
-      };
-
-      if (isArtistOnly) {
-        // CASO A: El usuario pidió un artista completo -> armar grandes éxitos
-        for (const t of directVideos.slice(1)) {
-          if (!isDuplicate(t)) {
-            seenIds.add(t.id);
-            fullPlaylist.push(t);
-            if (fullPlaylist.length >= 25) break;
-          }
-        }
-      } else {
-        // CASO B: El usuario pidió una canción específica
-        // REGLA CRÍTICA: La canción pedida va en la posición #1.
-        // Las siguientes posiciones son del mismo artista o canciones afines de la búsqueda directa en YouTube,
-        // deduplicadas y filtradas para evitar repeticiones.
-        for (const t of directVideos.slice(1)) {
-          if (!isDuplicate(t)) {
-            seenIds.add(t.id);
-            fullPlaylist.push(t);
+    // Si Google devolvió menos de 10 canciones, enriquecer con búsquedas complementarias en YouTube
+    if (fullPlaylist.length < 10) {
+      try {
+        const ytExtras = await scrapeYouTubeVideos(query, 12);
+        for (const yt of ytExtras) {
+          if (yt && yt.id && !seenIds.has(yt.id) && !isNonMusicVideo(yt.title, yt.duration)) {
+            seenIds.add(yt.id);
+            fullPlaylist.push(yt);
             if (fullPlaylist.length >= 20) break;
           }
         }
-      }
+      } catch {}
+    }
 
-      console.log(`[GoogleSearch] 🎵 Cola generada para "${effectiveQuery}": ${fullPlaylist.length} canciones únicas y variadas.`);
+    return {
+      videoId: topTrack.id,
+      title: topTrack.title,
+      artist: topTrack.artist,
+      thumbnail: topTrack.thumbnail,
+      duration: topTrack.duration,
+      items: fullPlaylist
+    };
+  }
 
+  // 3. Respaldo directo en YouTube con la frase exacta sin correcciones en caso de fallo de red
+  try {
+    console.log(`[GoogleSearch] 🔄 Respaldo en YouTube directo con la frase exacta: "${query}"`);
+    const directVideos = await scrapeYouTubeVideos(query, 14);
+    const musicOnly = directVideos.filter(v => !isNonMusicVideo(v.title, v.duration));
+    const candidates = musicOnly.length > 0 ? musicOnly : directVideos;
+
+    if (candidates.length > 0) {
+      const top = candidates[0];
       return {
-        videoId: topTrack.id,
-        title: topTrack.title,
-        artist: topTrack.artist,
-        thumbnail: topTrack.thumbnail,
-        duration: topTrack.duration,
-        items: fullPlaylist
+        videoId: top.id,
+        title: top.title,
+        artist: top.artist,
+        thumbnail: top.thumbnail,
+        duration: top.duration,
+        items: candidates
       };
     }
   } catch (err) {
-    console.error("[GoogleSearch] Error en búsqueda de video en Google/YouTube:", err);
+    console.error("[GoogleSearch] Error en búsqueda de respaldo en YouTube:", err);
   }
 
   return null;
 }
+
 

@@ -1497,8 +1497,8 @@ function parseVoiceCommandLocally(transcript: string, personality: string, curre
       return {
         action: 'play_artist',
         artist: searchTarget,
-        query: `${searchTarget} greatest hits playlist`,
-        speechFeedback: getDynamicFeedback('play', { target: `éxitos de ${searchTarget}` })
+        query: searchTarget,
+        speechFeedback: getDynamicFeedback('play', { target: `música de ${searchTarget}` })
       };
     }
 
@@ -1835,177 +1835,41 @@ app.get("/api/youtube/search", async (req, res) => {
     return res.json(payload);
   };
 
-  // ── VALIDACIÓN DURA DE ARTISTA ──────────────────────────────────────────────
-  // Si se pidió "<canción> de <artista>", NO se acepta una versión de otro artista: o
-  // suena la combinación pedida, o no se reproduce nada. La app es manos libres, así que
-  // nunca se pregunta al usuario ni se le ofrece una versión de otro artista.
-  const artistaPedido = (() => {
-    const limpio = query.replace(/[?.!]+$/, '').trim();
-    const m = /\b(?:de|por)\s+(.+)$/i.exec(limpio);
-    return m && m[1] ? m[1].trim() : '';
-  })();
-  const normalizar = (t: string) =>
-    (t || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  const coincideArtista = (t?: { title?: string; artist?: string } | null): boolean => {
-    if (!artistaPedido || !t) return true;
-    const tokens = normalizar(artistaPedido).split(/\s+/).filter(x => x.length >= 2);
-    if (tokens.length === 0) return true;
-    const combo = `${normalizar(t.title || '')} ${normalizar(t.artist || '')}`;
-    const compacto = combo.replace(/[^a-z0-9]/g, '');
-    // Se acepta la palabra completa O el nombre pegado sin separadores, porque los canales
-    // suelen ir así ("vicentefernandez", "50centvevo"). Sigue rechazando a otro artista
-    // ("slab" para "50 cent").
-    return tokens.every(x => {
-      const palabra = new RegExp(`(^|[^a-z0-9])${x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(combo);
-      return palabra || compacto.includes(x.replace(/[^a-z0-9]/g, ''));
-    });
-  };
-
-  // ── VALIDACIÓN DURA DE TÍTULO ───────────────────────────────────────────────
-  // Tener el artista correcto NO basta: sin esto se colaba "50 Cent - In Da Club"
-  // cuando se pedía "Pimp de 50 Cent". Se exige el título pedido como palabra completa,
-  // como token compactado (P.I.M.P. -> pimp) o como frase.
-  const tituloPedido = (() => {
-    const limpio = query.replace(/[?.!]+$/, '').trim();
-    const m = /\b(?:de|por)\s+(.+)$/i.exec(limpio);
-    const antes = (m ? limpio.slice(0, m.index) : limpio).trim();
-    return antes
-      .replace(/^(ponme|pon|poner|reproduce|reproducir|quiero escuchar|quiero oir|busca|buscame|escucha|toca|tocar|play|dale)\s+/i, '')
-      .replace(/^(la|el|una|un)\s+(cancion|tema|rola)\s+/i, '')
-      .trim();
-  })();
-  const coincideTitulo = (t?: { title?: string } | null): boolean => {
-    if (!tituloPedido || !t || !t.title) return true;
-    const tokens = normalizar(tituloPedido).split(/\s+/).filter(x => x.length >= 2);
-    const titulo = normalizar(t.title);
-    const compactoTituloPedido = tituloPedido.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/g, '');
-    const tokensTitulo = titulo.split(/\s+/).map(x => x.replace(/[^a-z0-9]/g, '')).filter(Boolean);
-    if (tokens.length === 0) {
-      return compactoTituloPedido.length >= 3 && tokensTitulo.includes(compactoTituloPedido);
-    }
-    const cubiertos = tokens.filter(x => {
-      const palabra = new RegExp(`(^|[^a-z0-9])${x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(titulo);
-      return palabra || tokensTitulo.includes(x.replace(/[^a-z0-9]/g, ''));
-    }).length;
-    return cubiertos / tokens.length >= 0.6;
-  };
-
-  // ── ¿COINCIDE CON TODA LA FRASE? (como buscar en Google) ────────────────────
-  // Todas las palabras significativas que dijo el usuario deben aparecer en el título o en
-  // el canal del resultado. Así "bonnie and clyde eminem" solo acepta la de Eminem, sin
-  // depender de que la frase use "de" (antes se colaba cualquier artista).
-  const palabrasPedidas = normalizar(query)
-    .replace(/\b(pon|ponme|poner|reproduce|reproducir|quiero|escuchar|oir|busca|buscame|buscar|escucha|toca|tocar|play|dale|la|el|los|las|un|una|unos|unas|de|del|por|y|o|que|con|para|en|al|and|the|of|my|feat|ft|official|oficial|video|audio|letra|lyrics|hd)\b/g, ' ')
-    .split(/\s+/)
-    .filter(x => x.length >= 3);
-  const coincideFrase = (t?: { title?: string; artist?: string } | null): boolean => {
-    if (!t) return false;
-    if (palabrasPedidas.length === 0) return true;
-    const combo = normalizar(`${t.title || ''} ${t.artist || ''}`);
-    const compacto = combo.replace(/[^a-z0-9]/g, '');
-    return palabrasPedidas.every(x =>
-      new RegExp(`(^|[^a-z0-9])${x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}([^a-z0-9]|$)`).test(combo) ||
-      compacto.includes(x)
-    );
-  };
-  // ── 1) GOOGLE DECIDE (arquitectura original) ────────────────────────────────
-  // Se usa el motor de búsqueda para resolver la canción y se abre el video que devuelve,
-  // pero solo si es del artista pedido.
+  // ── 1) BÚSQUEDA DIRECTA EN GOOGLE.COM SECCIÓN VIDEOS ──────────────────────────
+  // Se busca la frase completa SIN correcciones en google.com sección videos y se abre
+  // el video musical que Google proporciona en YouTube.
   try {
     const porGoogle = await searchGoogleForVideo(query, isArtistOnly);
     if (porGoogle && porGoogle.items && porGoogle.items.length > 0) {
-      const listaGoogle = Array.isArray(porGoogle.items) ? porGoogle.items : [];
-      const elegidoGoogle = listaGoogle.find((i: any) => coincideFrase(i));
-      if (elegidoGoogle) {
-        return responder({
-          source: 'google_youtube',
-          firstTrack: elegidoGoogle,
-          items: [elegidoGoogle, ...listaGoogle.filter((i: any) => i.id !== elegidoGoogle.id)]
-        });
-      }
-      console.warn('[Búsqueda] Google no devolvió la frase completa ("' + query + '"); se busca la combinación completa.');
-      console.warn(`[Búsqueda] Google propuso "${porGoogle.title}" de "${porGoogle.artist}", que NO es el artista pedido (${artistaPedido}). Se busca la versión correcta.`);
-    } else {
-      console.warn(`[Búsqueda] Google no devolvió resultados para "${query}"; se usa el plan B.`);
-    }
-  } catch (err) {
-    console.warn("Google (fuente principal) falló:", err);
-  }
-
-  try {
-    // ── BÚSQUEDA POR VOZ CON RECUPERACIÓN ESCALONADA (plan B) ─────────────────
-    // Petición limpia -> variantes fonéticas ES<->EN (y corrección de Google como
-    // fuente auxiliar) -> recombinación título/artista. YouTube sigue siendo la
-    // fuente principal de resultados y Google solo propone correcciones.
-    const inteligente = await searchYouTubeMusicSmart(query, isArtistOnly, {
-      corregirConGoogle: (q: string) => correctQueryWithGoogle(q)
-    });
-    if (inteligente.items.length > 0) {
-      const listaVoz = inteligente.items;
-      const elegidoVoz = listaVoz.find((i: any) => coincideFrase(i));
-      if (elegidoVoz) {
-        return responder({
-          source: inteligente.source,
-          firstTrack: elegidoVoz,
-          items: [elegidoVoz, ...listaVoz.filter((i: any) => i.id !== elegidoVoz.id)],
-          intent: inteligente.intent,
-          variantes: inteligente.variantes.map(v => v.texto),
-          confianza: inteligente.confianza
-        });
-      }
-      console.warn('[Búsqueda] Ninguna variante contiene toda la frase ("' + query + '"); se reproduce la mejor para no dejar silencio.');
-      if (false) {
-        return responder({
-          source: inteligente.source,
-          firstTrack: inteligente.firstTrack,
-          items: inteligente.items,
-          intent: inteligente.intent,
-          variantes: inteligente.variantes.map(v => v.texto),
-          confianza: inteligente.confianza
-        });
-      }
-      // Misma canción pero de OTRO artista: no se reproduce nada (manos libres, sin preguntar)
-      const elegido = inteligente.firstTrack;
-      console.warn(`[Búsqueda] Descartado "${elegido?.title}" de "${elegido?.artist}": no es del artista pedido (${artistaPedido}). No se reproduce nada.`);
-      console.warn('[Búsqueda] Sin coincidencia fiable; se usan los respaldos para no dejar silencio.');
-    }
-    if (inteligente.source === 'descartado') {
-      // Es un comando de control (pausa, siguiente, volumen…): no se busca nada
-      return responder({ source: 'descartado', items: [], motivo: inteligente.motivo });
-    }
-    if (inteligente.sinConfianza) {
-      // Se buscó de verdad y nada se parecía lo suficiente: mejor avisar que
-      // reproducir una canción distinta.
-      console.warn(`[BúsquedaVoz] Sin coincidencia fiable para "${query}": ${inteligente.motivo}`);
-      console.warn('[Búsqueda] Sin coincidencia fiable; se usan los respaldos para no dejar silencio.');
-    }
-    if (!inteligente.error) {
-      // Se buscó de verdad y no hay resultados: se informa y NO se recurre a los
-      // respaldos antiguos, que podían fabricar una canción con el texto de la petición.
-      console.warn(`[BúsquedaVoz] Sin resultados para "${query}": ${inteligente.motivo}`);
-      console.warn('[Búsqueda] Sin coincidencia fiable; se usan los respaldos para no dejar silencio.');
-    }
-  } catch (err) {
-    console.warn("Búsqueda por voz (recuperación escalonada) falló:", err);
-  }
-
-  try {
-    const video = await searchGoogleForVideo(query, isArtistOnly);
-    if (video && video.items && video.items.length > 0) {
-      return res.json({
+      console.log(`[Búsqueda] 🎯 Google.com Videos proporcionó: "${porGoogle.title}" (${porGoogle.videoId}) para la frase "${query}"`);
+      return responder({
         source: 'google_youtube',
         firstTrack: {
-          id: video.videoId,
-          title: video.title,
-          artist: video.artist,
-          thumbnail: video.thumbnail,
-          duration: video.duration
+          id: porGoogle.videoId,
+          title: porGoogle.title,
+          artist: porGoogle.artist,
+          thumbnail: porGoogle.thumbnail,
+          duration: porGoogle.duration
         },
-        items: video.items
+        items: porGoogle.items
       });
     }
   } catch (err) {
-    console.warn("Google / YouTube live search proxy error:", err);
+    console.warn("[Búsqueda] Error al consultar Google Videos:", err);
+  }
+
+  // ── 2) PLAN B: Búsqueda directa en YouTube con la frase exacta sin alteraciones ─
+  try {
+    const inteligente = await searchYouTubeMusicSmart(query, isArtistOnly);
+    if (inteligente && inteligente.items && inteligente.items.length > 0) {
+      return responder({
+        source: inteligente.source || 'youtube_direct',
+        firstTrack: inteligente.firstTrack || inteligente.items[0],
+        items: inteligente.items
+      });
+    }
+  } catch (err) {
+    console.warn("[Búsqueda] Fallback de YouTube inteligente:", err);
   }
 
   try {
