@@ -62,6 +62,11 @@ export default defineConfig(() => {
       },
     },
     server: {
+      // Hosts extra permitidas para previsualización por túnel (p. ej. trycloudflare.com).
+      // Se pasa por la variable de entorno ALLOWED_HOSTS (separada por comas).
+      allowedHosts: process.env.ALLOWED_HOSTS
+        ? process.env.ALLOWED_HOSTS.split(',').map((h) => h.trim()).filter(Boolean)
+        : true,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
