@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from "express";
 import http from "http";
 import path from "path";
+import { fileURLToPath } from "url";
 import os from "os";
 import fs from "fs";
 import { createHash, randomUUID } from "crypto";
@@ -223,10 +224,37 @@ app.post("/api/system/cancel-shutdown", (req, res) => {
 // acceso directo de la carpeta Inicio sin necesidad de Git ni permisos de admin.
 const SERCHTUBE_AUTOINICIO_NOMBRE = "SerchTube Music";
 
+// Soporte robusto para resolución de rutas tanto en ES Modules (tsx dev) como en CJS (dist/server.cjs)
+const appRootDir: string = (() => {
+  try {
+    if (typeof import.meta !== "undefined" && import.meta?.url) {
+      const dir = path.dirname(fileURLToPath(import.meta.url));
+      return dir.endsWith("dist") ? path.join(dir, "..") : dir;
+    }
+  } catch {}
+  try {
+    // @ts-ignore
+    if (typeof __dirname !== "undefined" && __dirname) {
+      // @ts-ignore
+      return __dirname.endsWith("dist") ? path.join(__dirname, "..") : __dirname;
+    }
+  } catch {}
+  return process.cwd();
+})();
+
 function getStartupPs1Path(): string {
-  // En desarrollo: raiz del proyecto. En build: dist/server.cjs -> un nivel arriba.
-  const baseDir = __dirname.endsWith("dist") ? path.join(__dirname, "..") : __dirname;
-  return path.join(baseDir, "scripts", "start-serchtube.ps1");
+  // En desarrollo (tsx / dev): raiz del proyecto. En build: dist/server.cjs -> un nivel arriba.
+  const candidates = [
+    path.join(appRootDir, "scripts", "start-serchtube.ps1"),
+    path.join(process.cwd(), "scripts", "start-serchtube.ps1"),
+    path.join(process.cwd(), "..", "scripts", "start-serchtube.ps1"),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return candidates[0];
 }
 
 function runStartupPowerShell(args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
@@ -261,7 +289,8 @@ app.get("/api/system/auto-start-status", (_req, res) => {
     .catch((err) => {
       // Respaldo por si el ps1 no esta disponible: comprobacion directa
       try {
-        const startupLnk = path.join(os.homedir(), "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", `${SERCHTUBE_AUTOINICIO_NOMBRE}.lnk`);
+        const appData = process.env.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+        const startupLnk = path.join(appData, "Microsoft", "Windows", "Start Menu", "Programs", "Startup", `${SERCHTUBE_AUTOINICIO_NOMBRE}.lnk`);
         res.json({ supported: true, enabled: fs.existsSync(startupLnk), fallback: true, error: String(err?.message || err) });
       } catch (err2: any) {
         res.status(500).json({ supported: true, enabled: false, error: String(err2?.message || err2) });

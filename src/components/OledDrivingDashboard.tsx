@@ -2225,51 +2225,16 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                 )
               },
               volume_nodes: {
-                name: 'Nodos & Volumen',
+                name: 'Volumen',
                 icon: Volume2,
                 content: (
-                  <div className="flex flex-col justify-center gap-3 flex-shrink-0 w-full sm:w-72">
-                    {/* Network Nodes Mini Status */}
-                    <div className="flex flex-col gap-1.5">
-                      <div className="flex justify-between text-[10px] uppercase tracking-widest text-gray-500">
-                        <span>Network Nodes</span>
-                        <span>Active</span>
-                      </div>
-                      <div className="flex items-center justify-between text-xs py-1 px-2.5 bg-white/5 rounded border border-white/5">
-                        <span className="text-gray-300">MASTER (Dashboard)</span>
-                        <span className="text-green-500 font-mono">●</span>
-                      </div>
-                      {connectedNodesCount > 1 && (
-                        <div className="flex items-center justify-between text-xs py-1 px-2.5 bg-white/5 rounded border border-white/5">
-                          <span className="text-gray-300">SATELLITE_A (Remote Mic)</span>
-                          <span className="text-blue-400 font-mono">●</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Video Quality Badge & Selector */}
-                    <button
-                      id="btn-footer-quality-row"
-                      type="button"
-                      onClick={() => setShowQualityMenu(!showQualityMenu)}
-                      className="flex items-center justify-between bg-white/5 hover:bg-white/10 px-2.5 py-1.5 rounded border border-white/10 hover:border-red-500/40 transition-colors cursor-pointer text-left w-full"
-                      title="Cambiar calidad y resolución de video"
-                    >
-                      <span className="text-[9px] font-bold uppercase text-gray-300 tracking-tighter flex items-center gap-1">
-                        <Tv size={11} className="text-red-400" />
-                        Calidad
-                      </span>
-                      <span className="text-[9px] font-mono font-bold text-red-400 truncate max-w-[80px] text-right">
-                        {currentQualityOption.badge || currentQualityOption.shortLabel}
-                      </span>
-                    </button>
-
+                  <div className="flex flex-col justify-center flex-shrink-0 w-full sm:w-64">
                     {/* Volume Control */}
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2.5 bg-white/5 py-1.5 px-3 rounded-xl border border-white/5">
                       <button
                         type="button"
                         onClick={onToggleMute}
-                        className="text-gray-400 hover:text-white p-1"
+                        className="text-gray-400 hover:text-white p-1 transition-colors cursor-pointer"
                         title={playerState.isMuted ? "Activar audio" : "Silenciar"}
                       >
                         {playerState.isMuted ? <VolumeX size={16} className="text-red-500" /> : <Volume2 size={16} />}
@@ -2284,7 +2249,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                         className="flex-1 accent-red-600 bg-white/10 rounded-lg cursor-pointer h-1.5"
                         title={`Volumen: ${playerState.volume}`}
                       />
-                      <span className="text-[10px] font-mono text-gray-400 w-7 text-right">
+                      <span className="text-[11px] font-mono font-bold text-gray-300 w-6 text-right">
                         {playerState.isMuted ? '0' : playerState.volume}
                       </span>
                     </div>

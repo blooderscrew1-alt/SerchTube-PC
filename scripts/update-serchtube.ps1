@@ -221,25 +221,39 @@ if (Test-Path -LiteralPath $archivoVersion) {
   $versionLocal = (Get-Content -LiteralPath $archivoVersion -Raw).Trim()
 }
 
+# Auto-deteccion de repositorio si existe .git/config (incluso sin git.exe instalado)
+if (Test-Path -LiteralPath (Join-Path $Raiz '.git\config')) {
+  try {
+    $gitCfg = Get-Content -LiteralPath (Join-Path $Raiz '.git\config') -Raw
+    if ($gitCfg -match 'url\s*=\s*(?:https?://github\.com/|git@github\.com:)([^\s\r\n]+)') {
+      $Repo = "https://github.com/$($matches[1].Trim() -replace '\.git$', '').git"
+    }
+  } catch { }
+}
+
+# ---- Token o Repo personalizado en .env ----
+$rutaEnv = Join-Path $Raiz '.env'
+if (Test-Path -LiteralPath $rutaEnv) {
+  try {
+    $lineasEnv = Get-Content -LiteralPath $rutaEnv
+    foreach ($lin in $lineasEnv) {
+      if (-not $Token -and $lin -match '^\s*(?:export\s+)?GITHUB_TOKEN\s*=\s*(.+?)\s*$') {
+        $Token = $matches[1].Trim().Trim('"').Trim("'")
+      }
+      if ($lin -match '^\s*(?:export\s+)?GITHUB_REPO\s*=\s*(.+?)\s*$') {
+        $Repo = $matches[1].Trim().Trim('"').Trim("'")
+      }
+    }
+  } catch { }
+}
+if (-not $Token) { $Token = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN') }
+
 $limpio = $Repo -replace '\.git$', '' -replace '^https?://github\.com/', ''
 $partes = $limpio -split '/'
 if ($partes.Count -lt 2) { Write-Mal "No pude interpretar el repositorio: $Repo"; exit 1 }
 $owner = $partes[0]; $nombreRepo = $partes[1]
 $zipUrl = "https://codeload.github.com/$owner/$nombreRepo/zip/refs/heads/$Rama"
 
-# ---- Token opcional (solo hace falta si el repo es PRIVADO) ----
-# Orden de busqueda: param -Token > variable de entorno GITHUB_TOKEN > .env del proyecto
-if (-not $Token) { $Token = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN') }
-if (-not $Token) {
-  $rutaEnv = Join-Path $Raiz '.env'
-  if (Test-Path -LiteralPath $rutaEnv) {
-    try {
-      $linea = Select-String -LiteralPath $rutaEnv -Pattern '^\s*(?:export\s+)?GITHUB_TOKEN\s*=\s*(.+?)\s*$' |
-               Select-Object -Last 1
-      if ($linea) { $Token = $linea.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'") }
-    } catch { }
-  }
-}
 $cabeceras = @{ 'User-Agent' = 'SerchTube-Updater' }
 if ($Token) {
   $cabeceras['Authorization'] = "Bearer $Token"
@@ -297,11 +311,13 @@ if ($shaRemoto -and $versionLocal -and ($shaRemoto -eq $versionLocal)) {
       } else { throw }
     }
     Expand-Archive -LiteralPath $zip -DestinationPath $temp -Force
-    $carpeta = Get-ChildItem -Path $temp -Directory | Where-Object { $_.Name -like "$nombreRepo-*" } | Select-Object -First 1
+    # GitHub siempre extrae los contenidos en un unico directorio principal dentro del zip
+    $carpeta = Get-ChildItem -Path $temp -Directory | Select-Object -First 1
     if (-not $carpeta) { Write-Mal "El ZIP no tiene la estructura esperada."; exit 1 }
 
     $antes = (Get-HashArchivo (Join-Path $Raiz 'server.ts')); if ($antes) { $antes = $antes.Substring(0, 8) }
     Write-Paso "Copiando archivos nuevos (sin tocar node_modules, logs ni .env)..."
+    $archivosModificados = $false
     if (Test-Comando 'robocopy') {
       # En Windows se usa robocopy porque mezcla carpetas correctamente. Con
       # Copy-Item, si la carpeta destino ya existe, el contenido terminaria
@@ -315,6 +331,8 @@ if ($shaRemoto -and $versionLocal -and ($shaRemoto -eq $versionLocal)) {
         Write-Mal "La copia de archivos fallo (robocopy codigo $($rc.ExitCode))."
         exit 1
       }
+      # En robocopy, ExitCode > 0 (1 a 7) indica que se copiaron o actualizaron archivos
+      if ($rc.ExitCode -gt 0) { $archivosModificados = $true }
       Write-Registro "robocopy codigo $($rc.ExitCode)"
     } else {
       # Fuera de Windows no hay robocopy: copia manual recursiva con las mismas
@@ -322,13 +340,20 @@ if ($shaRemoto -and $versionLocal -and ($shaRemoto -eq $versionLocal)) {
       Get-ChildItem -LiteralPath $carpeta.FullName -Force | ForEach-Object {
         Copy-Tree -Origen $_ -Destino (Join-Path $Raiz $_.Name)
       }
+      $archivosModificados = $true
     }
     $despues = (Get-HashArchivo (Join-Path $Raiz 'server.ts')); if ($despues) { $despues = $despues.Substring(0, 8) }
     $antesTitulo = "hash $antes"
     $despuesTitulo = "hash $despues"
-    $cambiado = ($antes -ne $despues)
+    # Se considera cambiado si robocopy copio archivos, o el hash cambio, o el commit SHA cambio
+    $cambiado = $archivosModificados -or ($antes -ne $despues) -or ($shaRemoto -and ($shaRemoto -ne $versionLocal))
     if ($cambiado -or -not $versionLocal) {
       Set-Content -LiteralPath $archivoVersion -Value $(if ($shaRemoto) { $shaRemoto } else { $despues })
+    }
+    # Si hubo cambios y habia un dist/ antiguo compilado, lo limpiamos para que el servidor
+    # ejecute siempre el codigo fresco recien actualizado sin artefactos viejos
+    if ($cambiado -and (Test-Path -LiteralPath (Join-Path $Raiz 'dist'))) {
+      Remove-Item -Recurse -Force (Join-Path $Raiz 'dist') -ErrorAction SilentlyContinue
     }
   } finally {
     Remove-Item -Recurse -Force $temp -ErrorAction SilentlyContinue
@@ -388,26 +413,25 @@ if ($compilarPrimeraVez -and -not $SinDependencias) {
   }
 }
 
-# ---------------------------------------------------------- 2) Reiniciar servidor
+# ---------------------------------------------------------- 2) Servidor y App
 $habiaServidor = (@(Get-ServidorPid).Count -gt 0)
+$startPs1 = Join-Path $PSScriptRoot 'start-serchtube.ps1'
+
 if ($SinReiniciar) {
-  Write-Paso "Servidor sin tocar (-SinReiniciar)."
-} elseif (-not $cambiado -and -not $Reiniciar) {
-  if ($habiaServidor) {
-    Write-Paso "No hubo cambios que aplicar: el servidor sigue corriendo."
+  Write-Paso "Servidor y aplicacion sin tocar (-SinReiniciar)."
+} else {
+  if ($habiaServidor -and $cambiado) {
+    Write-Paso "Deteniendo servidor anterior para recargar codigo nuevo..."
+    Stop-Servidor | Out-Null
+  }
+  
+  if (Test-Path -LiteralPath $startPs1) {
+    Write-Paso "Iniciando SerchTube Music y abriendo ventana..."
+    # start-serchtube.ps1 arranca el servidor si hace falta y abre la app en Edge/Chrome/Brave
+    Start-Process -FilePath 'powershell.exe' -ArgumentList ('-NoProfile -ExecutionPolicy Bypass -File "' + $startPs1 + '" -SinAutoInicio') -WorkingDirectory $Raiz
   } else {
-    # Sin Git ni npm a mano: el .bat deja la app lista, tambien si estaba apagada
-    Write-Paso "El servidor estaba apagado: se arranca para no tener que ejecutar nada mas."
     Start-Servidor | Out-Null
   }
-} else {
-  if ($habiaServidor) {
-    Stop-Servidor | Out-Null
-    Write-Paso "Servidor detenido."
-  } else {
-    Write-Paso "El servidor estaba apagado: se arranca con el codigo nuevo."
-  }
-  Start-Servidor | Out-Null
 }
 
 # ------------------------------------------------------------------ 3) Resumen
