@@ -552,6 +552,8 @@ export default function App() {
   const playbackCooldownUntilRef = useRef<number>(0);
   // Saludo de bienvenida diferido: se cancela si el comando llega justo detrás de la palabra clave
   const pendingGreetingTimerRef = useRef<any>(null);
+  // Timestamp del último sonido de identificación de micrófono abierto (para no duplicar tono)
+  const lastWakeBeepTimeRef = useRef<number>(0);
 
   // Sincronizar el "micrófono caliente" con el servicio de voz: mientras se espera un
   // comando tras la palabra clave, la escucha no se bloquea por el saludo del TTS
@@ -1261,17 +1263,8 @@ export default function App() {
                   scanner.saveDiscoveredHost(found.url);
                   NodeSyncService.getInstance().setCustomHost(`${found.ip}:${found.port}`);
 
-                  // Si el Host encontrado tiene una IP u origen diferente al actual del navegador,
-                  // redirigir la página del teléfono al nuevo origen para garantizar conectividad total:
-                  if (window.location.origin !== found.url) {
-                    const searchParams = new URLSearchParams(window.location.search);
-                    searchParams.set('role', 'satellite');
-                    searchParams.set('room', roomParam);
-                    console.log(`[Satellite Auto-Reconnect] 🔄 Redirigiendo navegador móvil a ${found.url}/?${searchParams.toString()}`);
-                    window.location.replace(`${found.url}/?${searchParams.toString()}`);
-                  } else {
-                    setAssistantResponse(`¡Reconectado con el coche en ${found.ip}:${found.port}!`);
-                  }
+                  // Reconectar WebSocket directamente al nuevo host detectado
+                  setAssistantResponse(`¡Reconectado con el coche en ${found.ip}:${found.port}!`);
                 }
               });
             }
@@ -1357,6 +1350,12 @@ export default function App() {
           // 🎚️ Atenuar la música YA (ruta interina)
           if (playerStateRef.current.isPlaying) {
             AudioEngine.getInstance().startDucking(150);
+          }
+          // 🔔 Sonido de identificación de micrófono abierto (similar a volumen, sin respuestas de voz TTS)
+          const nowBeep = Date.now();
+          if (nowBeep - lastWakeBeepTimeRef.current > 1500) {
+            lastWakeBeepTimeRef.current = nowBeep;
+            AudioEngine.getInstance().playBeep('up');
           }
         }
 
@@ -1494,26 +1493,25 @@ export default function App() {
               setMicActivationSource('host');
               setSystemStatus('listening');
               setIsListening(true);
-              setAssistantResponse(`⚡ ¡"${wakeWordStr}" detectada! Escuchando tu orden (5s)...`);
+              setAssistantResponse(`⚡ ¡"${wakeWordStr}" detectada! Micrófono abierto (5s)...`);
 
               // Atenuar música de inmediato para que el usuario pueda hablar suave sin gritar sobre la música
               if (playerStateRef.current.isPlaying) {
                 AudioEngine.getInstance().startDucking(150);
               }
 
-              const personality = currentConfig.personality || 'animada';
-              const options = WAKE_GREETINGS[personality] || WAKE_GREETINGS.animada || WAKE_GREETINGS.directa;
-              const greeting = options[Math.floor(Math.random() * options.length)];
+              // 🔔 Sonido de identificación de micrófono abierto (similar a cuando se pide volumen, SIN respuestas por voz TTS)
+              const nowBeep = Date.now();
+              if (nowBeep - lastWakeBeepTimeRef.current > 1500) {
+                lastWakeBeepTimeRef.current = nowBeep;
+                AudioEngine.getInstance().playBeep('up');
+              }
 
-              // Saludo DIFERIDO: si el comando llega enseguida ("música ... eminem" con pausa),
-              // se cancela el saludo y se ejecuta directo, sin que el TTS tape el micrófono
-              if (pendingGreetingTimerRef.current) clearTimeout(pendingGreetingTimerRef.current);
-              pendingGreetingTimerRef.current = setTimeout(() => {
+              // Cancelar cualquier saludo por voz para garantizar CERO respuestas por voz TTS
+              if (pendingGreetingTimerRef.current) {
+                clearTimeout(pendingGreetingTimerRef.current);
                 pendingGreetingTimerRef.current = null;
-                if (isAwaitingCommandRef.current) {
-                  SpeechService.getInstance().speak(greeting);
-                }
-              }, 1400);
+              }
 
               // Establish strict 5-second frame to capture request or auto-cancel on inactivity
               if (activeListeningTimerRef.current) clearTimeout(activeListeningTimerRef.current);

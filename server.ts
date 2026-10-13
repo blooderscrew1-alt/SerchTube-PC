@@ -291,7 +291,9 @@ app.get("/api/network/ip", (req, res) => {
 app.get(["/remote", "/mando", "/satellite", "/control", "/qr"], (req, res) => {
   const room = (req.query.room as string) || "serchtube-master";
   console.log(`[Mando Remoto Móvil] 📱 Redirigiendo cliente móvil a interfaz de satélite (sala: ${room})`);
-  res.redirect(`/?role=satellite&room=${encodeURIComponent(room)}`);
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  const host = req.headers.host || `localhost:${PORT}`;
+  res.redirect(302, `${proto}://${host}/?role=satellite&room=${encodeURIComponent(room)}`);
 });
 
 // Voice Command Interpretation endpoint (Local High-Performance NLP)

@@ -58,7 +58,14 @@ export class NodeSyncService {
   }
 
   public getActiveHost(): string {
-    return this.customHost || window.location.host;
+    if (typeof window !== 'undefined' && window.location.host) {
+      const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+      if (!isLocal && !this.customHost) {
+        return window.location.host;
+      }
+      return this.customHost || window.location.host;
+    }
+    return this.customHost || 'localhost:3000';
   }
 
   public reconnect() {
@@ -138,9 +145,9 @@ export class NodeSyncService {
 
     try {
       const activeHost = this.getActiveHost();
-      // Use ws: for local LAN IPs (192.168.x.x, 10.x.x.x, localhost, etc.)
-      const isSecure = window.location.protocol === 'https:' && !activeHost.startsWith('192.') && !activeHost.startsWith('10.') && !activeHost.startsWith('172.') && !activeHost.includes('localhost');
-      const protocol = isSecure ? 'wss:' : 'ws:';
+      // En páginas HTTPS el navegador bloquea 'ws:' por Mixed Content, debe ser 'wss:'
+      const isHttps = typeof window !== 'undefined' && window.location.protocol === 'https:';
+      const protocol = isHttps ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${activeHost}/ws`;
 
       this.ws = new WebSocket(wsUrl);

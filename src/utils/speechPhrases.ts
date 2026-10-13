@@ -111,7 +111,7 @@ export function getEnthusiasticFeedback(
   const bank: Record<string, Record<string, string[]>> = {
     play: {
       animada: [
-        `¡Oído cocina, jefe! ¡Marchando ese temazo de ${cleanTarget} con todo el sabor!`,
+        `¡Oído jefe! ¡Marchando ese temazo de ${cleanTarget} con todo el sabor!`,
         `¡Uff qué buen gusto tienes! Poniéndote ${cleanTarget} para reventar los altavoces de pura fiesta.`,
         `¡Vámonos que nos vamos! Dale caña a ${cleanTarget}, ¡a cantar a grito pelado!`,
         `¡A sus órdenes, comandante del ritmo! Desplegando ${cleanTarget} para alegrarte el día.`,

@@ -95,13 +95,13 @@ export const QuickRemoteQrCode: React.FC<QuickRemoteQrCodeProps> = ({
 
     // Si el usuario eligió modo URL del navegador o si no es localhost
     if (linkMode === 'origin' || (!isLocalhost && !localIp)) {
-      return `${window.location.origin}/remote?room=${encodeURIComponent(activeRoom)}`;
+      return `${window.location.origin}/?role=satellite&room=${encodeURIComponent(activeRoom)}`;
     }
 
     // Modo IP LAN para conectar celulares en la misma red Wi-Fi
     const bestIp = localIp || detectedIp || '192.168.1.100';
     const port = (typeof window !== 'undefined' && window.location.port) ? window.location.port : '3000';
-    return `http://${bestIp}:${port}/remote?room=${encodeURIComponent(activeRoom)}`;
+    return `http://${bestIp}:${port}/?role=satellite&room=${encodeURIComponent(activeRoom)}`;
   }, [room, localIp, detectedIp, linkMode]);
 
   const handleCopyLink = (e: React.MouseEvent) => {
