@@ -35,7 +35,7 @@ import { GoogleHomeModal } from './components/GoogleHomeModal';
 import { AnimatedQrCountdownModal } from './components/AnimatedQrCountdownModal';
 import { googleHomeService } from './services/googleHomeService';
 import { isPureResumePhrase, extractYouTubeId, isValidYouTubeId } from './utils/youtube';
-import { WAKE_GREETINGS, getEnthusiasticFeedback } from './utils/speechPhrases';
+import { getEnthusiasticFeedback } from './utils/speechPhrases';
 
 interface GamepadControlsProps {
   onVolumeStep: (delta: number, source: 'teclado' | 'control') => void;
@@ -1351,11 +1351,11 @@ export default function App() {
           if (playerStateRef.current.isPlaying) {
             AudioEngine.getInstance().startDucking(150);
           }
-          // 🔔 Sonido de identificación de micrófono abierto (similar a volumen, sin respuestas de voz TTS)
+          // 🔔 Sonido de notificación al abrir el micrófono (sin saludos hablados por TTS)
           const nowBeep = Date.now();
           if (nowBeep - lastWakeBeepTimeRef.current > 1500) {
             lastWakeBeepTimeRef.current = nowBeep;
-            AudioEngine.getInstance().playBeep('up');
+            AudioEngine.getInstance().playWakeSound();
           }
         }
 
@@ -1500,11 +1500,11 @@ export default function App() {
                 AudioEngine.getInstance().startDucking(150);
               }
 
-              // 🔔 Sonido de identificación de micrófono abierto (similar a cuando se pide volumen, SIN respuestas por voz TTS)
+              // 🔔 Sonido de notificación al abrir el micrófono (SIN saludos ni respuestas por voz TTS)
               const nowBeep = Date.now();
               if (nowBeep - lastWakeBeepTimeRef.current > 1500) {
                 lastWakeBeepTimeRef.current = nowBeep;
-                AudioEngine.getInstance().playBeep('up');
+                AudioEngine.getInstance().playWakeSound();
               }
 
               // Cancelar cualquier saludo por voz para garantizar CERO respuestas por voz TTS

@@ -4,90 +4,13 @@ export function pickRandom<T>(items: T[]): T {
   return items[Math.floor(Math.random() * items.length)];
 }
 
-// Rich, cheerful, friendly, enthusiastic, and witty phrases for wake word greetings
-// STRICT RULE: NEVER include the wake word ("música" / "musica") in greetings so the speakers don't reopen the mic
-export const WAKE_GREETINGS: Record<VoicePersonality, string[]> = {
-  // 🛡️ REGLA ESTRICTA: saludos SIEMPRE cortos (1-4 palabras). Los nodos satélite
-  // también capturan la voz del asistente por sus micrófonos; frases largas
-  // aumentan el riesgo de reactivarlos o de ser procesadas como comandos.
-  animada: [
-    "¡Dime!",
-    "¡Te escucho!",
-    "¡Aquí estoy!",
-    "¡Dímelo!",
-    "¿Qué ponemos?",
-    "¡Epa! Dime.",
-    "¡Listo!",
-    "¡Sí, jefe?",
-    "Adelante.",
-    "¿Qué pongo?"
-  ],
-  directa: [
-    "Dime.",
-    "Te escucho.",
-    "Aquí estoy.",
-    "¿Qué ponemos?",
-    "Listo.",
-    "Adelante.",
-    "Sí.",
-    "¿Qué pongo?"
-  ],
-  conductor: [
-    "Dime, conductor.",
-    "Te escucho.",
-    "Copiloto listo.",
-    "¿Qué ponemos?",
-    "Aquí estoy.",
-    "Ruta clara. Dime."
-  ],
-  copiloto_rally: [
-    "¡Copiloto listo!",
-    "¡Dime!",
-    "Te escucho.",
-    "¡A fondo! Dime.",
-    "¿Qué ponemos?"
-  ],
-  locutor_fm: [
-    "Al aire. Dime.",
-    "Te escuchamos.",
-    "¿Qué suena?",
-    "En antena. Dime.",
-    "Adelante, oyente."
-  ],
-  calida: [
-    "Dime.",
-    "Te escucho.",
-    "Aquí estoy.",
-    "¿Qué ponemos?",
-    "Claro, dime.",
-    "Listo. Dime."
-  ],
-  jarvis: [
-    "A su orden.",
-    "Sistemas listos.",
-    "Le escucho.",
-    "Dígale.",
-    "En línea. Adelante."
-  ],
-  zen: [
-    "Te escucho.",
-    "En calma. Dime.",
-    "Aquí estoy.",
-    "Dime con calma."
-  ],
-  formal: [
-    "A su disposición.",
-    "Le escucho.",
-    "Dígame.",
-    "Indique su orden."
-  ],
-  cyberpunk: [
-    "Enlace abierto.",
-    "Listo. Dime.",
-    "Te escucho.",
-    "Canal activo. Dime."
-  ]
-};
+// 🔕 SALUDOS HABLADOS DESACTIVADOS A PETICIÓN DEL USUARIO:
+// Al detectar la palabra clave ya NO se dice ninguna frase por TTS.
+// En su lugar se reproduce un sonido corto estilo notificación
+// (AudioEngine.playWakeSound -> /wake-sub-bass.mp3 y /wake-notification.mp3,
+// situados en la carpeta main/public del proyecto).
+// Se mantiene el mapa vacío por compatibilidad con importaciones existentes.
+export const WAKE_GREETINGS: Partial<Record<VoicePersonality, string[]>> = {};
 
 // Generates enthusiastic, cheerful, friendly, and funny speech responses for any action
 export function getEnthusiasticFeedback(

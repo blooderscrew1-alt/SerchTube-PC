@@ -340,6 +340,47 @@ export class AudioEngine {
       console.warn("AudioEngine playBeep error:", e);
     }
   }
+
+  // 🔔 Sonidos de notificación al activar el micrófono con la palabra clave
+  // (sustituyen a los saludos hablados por TTS). MP3 ubicados en /public (carpeta main del proyecto).
+  private wakeSoundElements: HTMLAudioElement[] | null = null;
+
+  private getWakeSounds(): HTMLAudioElement[] {
+    if (!this.wakeSoundElements) {
+      const sources = ['/wake-sub-bass.mp3', '/wake-notification.mp3'];
+      this.wakeSoundElements = sources.map(src => {
+        const el = new Audio(src);
+        el.preload = 'auto';
+        return el;
+      });
+    }
+    return this.wakeSoundElements;
+  }
+
+  /**
+   * Reproduce un sonido corto estilo notificación (sub bass o ringtone SMS)
+   * en lugar de decir una frase de saludo al detectar la palabra clave.
+   */
+  public playWakeSound() {
+    try {
+      const sounds = this.getWakeSounds();
+      const sound = sounds[Math.floor(Math.random() * sounds.length)];
+      if (!sound) return;
+      // Reiniciar y reproducir al instante (permite solaparse si se reactiva rápido)
+      sound.currentTime = 0;
+      const playPromise = sound.play();
+      if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(err => {
+          console.warn("AudioEngine playWakeSound error:", err);
+          // Reintentar tras reactivar el contexto de audio (política de autoplay)
+          this.resume();
+          sound.play().catch(() => {});
+        });
+      }
+    } catch (e) {
+      console.warn("AudioEngine playWakeSound error:", e);
+    }
+  }
 }
 
 export const PRESET_EQUALIZERS: Record<string, { bass: number; mid: number; presence: number; treble: number }> = {
