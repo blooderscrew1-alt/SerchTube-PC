@@ -12,3 +12,5 @@ coverage/
 __pycache__/
 *.pyc
 logs/
+# Version de GitHub aplicada por "Actualizar SerchTube.bat"
+.version-remota.txt

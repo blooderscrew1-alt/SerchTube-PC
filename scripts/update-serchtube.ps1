@@ -4,16 +4,24 @@
 
   Que hace:
     1. Comprueba que esta carpeta es el proyecto.
-    2. Trae SOLO lo que cambio desde GitHub, con git (rapido, sin bajar todo).
+    2. Descarga el ZIP de la rama 'main' desde GitHub (no necesita Git instalado)
+       y copia SOLO los archivos nuevos por encima de esta carpeta.
        Tus claves (.env), tus registros (logs/) y node_modules/ NO se tocan.
     3. Ejecuta "npm install" UNICAMENTE si cambio package.json / package-lock.json /
        bun.lock o si falta node_modules. Si no cambio nada, no pierde tiempo.
     4. Reinicia el servidor si estaba corriendo, para que tome los cambios.
     5. Muestra un resumen: de que version a que version y que hizo.
 
-  Si la carpeta NO es un repositorio git (la bajaste como ZIP), no hace falta Git:
-  el script descarga el ZIP del repositorio y copia encima, conservando node_modules,
-  .env y logs.
+  METODO PRINCIPAL (ZIP): basta Windows + PowerShell (viene incluido). No se
+  necesita Git ni haber clonado el repo. Solo si el ZIP trae dependencias nuevas
+  ('package.json' cambiado) se ejecuta 'npm install'; si no, no pierde tiempo.
+
+  REPOSITORIO PRIVADO: hace falta un token de GitHub con permiso de lectura
+  (scope 'repo' o fine-grained con Contents: Read-only). Se puede indicar de
+  tres formas: param -Token, variable de entorno GITHUB_TOKEN, o una linea
+  GITHUB_TOKEN=... dentro del archivo .env del proyecto (recomendado: asi el
+  .bat funciona con doble clic sin configurar nada mas). Con repos publicos
+  no se necesita token.
 
   Uso:
     powershell -NoProfile -ExecutionPolicy Bypass -File scripts\update-serchtube.ps1
@@ -29,7 +37,12 @@ param(
   [string]$Rama = 'main',
 
   # Repositorio a usar cuando la carpeta no es un repo git (modo ZIP)
-  [string]$Repo = 'https://github.com/blooderscrew1-alt/Serchtube-PC.git',
+  [string]$Repo = 'https://github.com/blooderscrew1-alt/SerchTube-PC.git',
+
+  # Token de GitHub (solo hace falta si el repositorio es PRIVADO).
+  # Tambien se puede indicar con la variable de entorno GITHUB_TOKEN,
+  # o guardandolo en el archivo .env del proyecto: GITHUB_TOKEN=...
+  [string]$Token = '',
 
   [int]$Puerto = 3000,
 
@@ -111,6 +124,24 @@ function Start-Servidor {
   Write-Aviso "No se pudo confirmar el arranque. Revisa logs\servidor.log"
   return $false
 }
+function Copy-Tree {
+  param([System.IO.FileSystemInfo]$Origen, [string]$Destino)
+  # Copia recursiva respetando las exclusiones del updater (node_modules, logs,
+  # dist, .git y cualquier .env*). Solo se usa si no existe robocopy.
+  $nombresIgnorar = @('node_modules','logs','dist','.git')
+  if ($Origen.PSIsContainer) {
+    if ($nombresIgnorar -contains $Origen.Name) { return }
+    if (-not (Test-Path -LiteralPath $Destino)) { New-Item -ItemType Directory -Force -Path $Destino | Out-Null }
+    Get-ChildItem -LiteralPath $Origen.FullName -Force | ForEach-Object {
+      Copy-Tree -Origen $_ -Destino (Join-Path $Destino $_.Name)
+    }
+  } else {
+    if ($Origen.Name -like '.env*') { return }
+    $dirPadre = Split-Path -Parent $Destino
+    if (-not (Test-Path -LiteralPath $dirPadre)) { New-Item -ItemType Directory -Force -Path $dirPadre | Out-Null }
+    Copy-Item -LiteralPath $Origen.FullName -Destination $Destino -Force
+  }
+}
 function Get-HashArchivo([string]$ruta) {
   if (-not (Test-Path -LiteralPath $ruta)) { return '' }
   return (Get-FileHash -LiteralPath $ruta -Algorithm SHA256).Hash
@@ -131,16 +162,15 @@ function Instalar-ConWinget([string]$id, [string]$nombre) {
 }
 
 function Comprobar-Requisitos {
-  # Node.js (obligatorio para correr/actualizar) y Git (opcional: sin el se usa el ZIP)
+  # Para ACTUALIZAR solo hacen falta Windows + PowerShell (viene incluido):
+  # se baja el ZIP de GitHub, no hace falta Git. Node/npm solo se necesitan
+  # si cambian las dependencias o para arrancar el servidor.
   $faltan = @()
   if (-not (Test-Comando 'node') -or -not (Test-Comando 'npm')) {
-    $faltan += @{ Nombre = 'Node.js (incluye npm)'; Id = 'OpenJS.NodeJS.LTS'; Url = 'https://nodejs.org' }
-  }
-  if (-not (Test-Comando 'git')) {
-    $faltan += @{ Nombre = 'Git'; Id = 'Git.Git'; Url = 'https://git-scm.com/download/win' }
+    Write-Aviso "No se detecta Node.js/npm (solo hace falta si cambian las dependencias)."
   }
   if ($faltan.Count -eq 0) {
-    Write-Paso "Requisitos OK (node, npm, git)."
+    Write-Paso "Requisitos OK: no hace falta Git, se actualiza descargando el ZIP de GitHub."
     return
   }
   foreach ($f in $faltan) { Write-Aviso "Falta $($f.Nombre)  ->  $($f.Url)" }
@@ -148,7 +178,6 @@ function Comprobar-Requisitos {
     foreach ($f in $faltan) { Instalar-ConWinget $f.Id $f.Nombre | Out-Null }
     $siguen = @()
     if (-not (Test-Comando 'node') -or -not (Test-Comando 'npm')) { $siguen += 'Node.js' }
-    if (-not (Test-Comando 'git')) { $siguen += 'Git' }
     if ($siguen.Count -gt 0) {
       Write-Aviso "Todavia faltan: $($siguen -join ', '). Cierra esta ventana, vuelve a abrirla y ejecuta de nuevo."
     } else {
@@ -183,92 +212,124 @@ $depsSaltadas = $false
 $hashPackageAntes = Get-HashArchivo (Join-Path $Raiz 'package.json')
 $hashLockAntes = Get-HashArchivo (Join-Path $Raiz 'package-lock.json')
 
-# ============================================================ MODO GIT (rapido)
-if ($esRepo -and (Test-Comando 'git')) {
-  $remoto = (git -C $Raiz remote get-url origin 2>$null)
-  if (-not $remoto) { Write-Aviso "El repo no tiene remoto 'origin'." } else { Write-Paso "Repositorio: $remoto" }
-
-  $sucio = @(git -C $Raiz status --porcelain)
-  if ($sucio.Count -gt 0) {
-    if ($Forzar) {
-      Write-Aviso "Hay $($sucio.Count) archivo(s) con cambios locales: se descartan (-Forzar)."
-      git -C $Raiz reset --hard --quiet | Out-Null
-    } else {
-      Write-Aviso "Hay $($sucio.Count) archivo(s) con cambios locales: se guardan temporalmente (git stash)."
-      git -C $Raiz stash push -u -m "antes de actualizar $(Get-Date -Format 'yyyy-MM-dd HH:mm')" | Out-Null
-      if ($LASTEXITCODE -ne 0) {
-        Write-Mal "No pude guardar los cambios locales. Guardalos tú o ejecuta con -Forzar."
-        exit 1
-      }
-      $stasheado = $true
-      Write-Aviso "Tus cambios quedaron en 'git stash'. Para recuperarlos despues:  git stash pop"
-    }
-  }
-
-  $antes = (git -C $Raiz rev-parse --short HEAD 2>$null)
-  $antesTitulo = (git -C $Raiz log -1 --pretty=%s 2>$null)
-
-  Write-Paso "Buscando actualizaciones en la rama '$Rama'..."
-  git -C $Raiz fetch origin $Rama --quiet
-  if ($LASTEXITCODE -ne 0) { Write-Mal "No se pudo consultar el repositorio (revisa internet)."; exit 1 }
-
-  $cuenta = (git -C $Raiz rev-list --count "HEAD..origin/$Rama" 2>$null)
-  if ($cuenta) { $detras = [int]$cuenta }
-
-  if ($Forzar) {
-    git -C $Raiz reset --hard "origin/$Rama" --quiet
-  } else {
-    git -C $Raiz pull --ff-only origin $Rama --quiet
-    if ($LASTEXITCODE -ne 0) {
-      Write-Mal "No se pudo actualizar con 'git pull' (cambios locales o historiales distintos)."
-      Write-Mal "Solucion rapida: vuelve a ejecutar con -Forzar (descarta cambios locales de ESTA carpeta)."
-      exit 1
-    }
-  }
-
-  $despues = (git -C $Raiz rev-parse --short HEAD 2>$null)
-  $despuesTitulo = (git -C $Raiz log -1 --pretty=%s 2>$null)
-  $cambiado = ($antes -ne $despues)
+# ================================================ 1) COMPROBACION RAPIDA (sin Git)
+# Se pide a la API de GitHub el ultimo commit de la rama y se compara con el que
+# se guardo localmente en .version-remota.txt. Si coincide, no se descarga nada.
+$archivoVersion = Join-Path $Raiz '.version-remota.txt'
+$versionLocal = ''
+if (Test-Path -LiteralPath $archivoVersion) {
+  $versionLocal = (Get-Content -LiteralPath $archivoVersion -Raw).Trim()
 }
-# ================================================= MODO ZIP (sin git, o sin repo)
-else {
-  if ($esRepo) { Write-Aviso "No encontre Git: se actualiza bajando el ZIP del repositorio." }
-  else { Write-Paso "Esta copia no es un repositorio git: se actualiza bajando el ZIP (una sola descarga)." }
 
-  $urlZip = $Repo
-  if ($urlZip -notmatch 'github\.com') { Write-Mal "Para el modo ZIP hace falta un repo de GitHub. Usa -Repo <url>."; exit 1 }
-  $limpio = $urlZip -replace '\.git$', '' -replace '^https?://github\.com/', ''
-  $partes = $limpio -split '/'
-  if ($partes.Count -lt 2) { Write-Mal "No pude interpretar el repositorio: $Repo"; exit 1 }
-  $zipUrl = "https://codeload.github.com/$($partes[0])/$($partes[1])/zip/refs/heads/$Rama"
+$limpio = $Repo -replace '\.git$', '' -replace '^https?://github\.com/', ''
+$partes = $limpio -split '/'
+if ($partes.Count -lt 2) { Write-Mal "No pude interpretar el repositorio: $Repo"; exit 1 }
+$owner = $partes[0]; $nombreRepo = $partes[1]
+$zipUrl = "https://codeload.github.com/$owner/$nombreRepo/zip/refs/heads/$Rama"
 
-  $temp = Join-Path $env:TEMP ("serchtube-update-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+# ---- Token opcional (solo hace falta si el repo es PRIVADO) ----
+# Orden de busqueda: param -Token > variable de entorno GITHUB_TOKEN > .env del proyecto
+if (-not $Token) { $Token = [Environment]::GetEnvironmentVariable('GITHUB_TOKEN') }
+if (-not $Token) {
+  $rutaEnv = Join-Path $Raiz '.env'
+  if (Test-Path -LiteralPath $rutaEnv) {
+    try {
+      $linea = Select-String -LiteralPath $rutaEnv -Pattern '^\s*(?:export\s+)?GITHUB_TOKEN\s*=\s*(.+?)\s*$' |
+               Select-Object -Last 1
+      if ($linea) { $Token = $linea.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'") }
+    } catch { }
+  }
+}
+$cabeceras = @{ 'User-Agent' = 'SerchTube-Updater' }
+if ($Token) {
+  $cabeceras['Authorization'] = "Bearer $Token"
+  Write-Paso "Usando token de GitHub (repositorio privado)."
+} else {
+  Write-Paso "Sin token: se probara como repositorio publico. Si es privado, anade GITHUB_TOKEN=tu_token al archivo .env."
+}
+
+Write-Paso "Buscando actualizaciones de '$owner/$nombreRepo' (rama $Rama)..."
+$shaRemoto = ''
+try {
+  $infoApi = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$nombreRepo/commits/$Rama" `
+    -Headers $cabeceras -TimeoutSec 30
+  $shaRemoto = $infoApi.sha
+  $despuesTitulo = $infoApi.commit.message.Split("`n")[0]
+} catch { Write-Aviso "No se pudo consultar la API de GitHub; se comprueba bajando el ZIP." }
+
+# Version "publicada localmente": solo sabemos que tenemos la ultima si YA bajo
+# ese mismo commit (archivo .version-remota.txt). Con '-Forzar' se baja siempre.
+if ($Forzar) { $versionLocal = '' }
+
+if ($shaRemoto -and $versionLocal -and ($shaRemoto -eq $versionLocal)) {
+  $cambiado = $false
+  $antes = $versionLocal.Substring(0, 7); $despues = $antes
+  if (-not $antesTitulo) { $antesTitulo = $despuesTitulo }
+  if (Test-Path -LiteralPath (Join-Path $Raiz 'dist\server.cjs')) {
+    Write-Paso "Ya estas en la ultima version ($($antes)). Nada que descargar."
+  } else {
+    Write-Paso "El codigo ya es el ultimo ($($antes)); falta compilar una vez (npm run build)."
+    $compilarPrimeraVez = $true
+  }
+} else {
+  # ================================================= MODO ZIP (unica via: no hace falta Git)
+  if ($esRepo) { Write-Aviso "Esta copia es un repo git, pero se actualiza por ZIP para no depender de Git." }
+  else { Write-Paso "Se actualiza bajando el ZIP de GitHub (una sola descarga, no hace falta Git)." }
+
+  # $env:TEMP solo existe en Windows; si no, usar el directorio temporal de PowerShell
+  $dirTmp = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
+  $temp = Join-Path $dirTmp ("serchtube-update-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
   New-Item -ItemType Directory -Force -Path $temp | Out-Null
   try {
     $zip = Join-Path $temp 'repo.zip'
     Write-Paso "Descargando $zipUrl"
-    Invoke-WebRequest -Uri $zipUrl -OutFile $zip -UseBasicParsing -TimeoutSec 180
-    Expand-Archive -LiteralPath $zip -DestinationPath $temp -Force
-    $carpeta = Get-ChildItem -Path $temp -Directory | Where-Object { $_.Name -like "$($partes[1])-*" } | Select-Object -First 1
-    if (-not $carpeta) { Write-Mal "El ZIP no tiene la estructura esperada."; exit 1 }
-    $antes = (Get-HashArchivo (Join-Path $Raiz 'server.ts')).Substring(0, 8)
-    Write-Paso "Copiando archivos nuevos (sin tocar node_modules, logs ni .env)..."
-    # Se usa robocopy porque mezcla carpetas correctamente. Con Copy-Item, si la
-    # carpeta destino ya existe, el contenido terminaria anidado (scripts\scripts).
-    $rc = Start-Process -FilePath 'robocopy.exe' -Wait -PassThru -WindowStyle Hidden -ArgumentList @(
-      "`"$($carpeta.FullName)`"", "`"$Raiz`"",
-      '/E', '/XD', 'node_modules', 'logs', 'dist', '.git', '/XF', '.env*',
-      '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1'
-    )
-    if ($rc.ExitCode -ge 8) {
-      Write-Mal "La copia de archivos fallo (robocopy codigo $($rc.ExitCode))."
-      exit 1
+    # El token se pasa por cabecera Authorization (soportado por codeload);
+    # nunca por la URL para no dejar el token en el historial/log.
+    $descCabeceras = @{ 'User-Agent' = 'SerchTube-Updater' }
+    if ($Token) { $descCabeceras['Authorization'] = "Bearer $Token" }
+    try {
+      Invoke-WebRequest -Uri $zipUrl -OutFile $zip -UseBasicParsing -TimeoutSec 180 -Headers $descCabeceras
+    } catch {
+      # Si fallo con token, se reintenta sin token (por si el repo es publico)
+      if ($Token) {
+        Write-Aviso "La descarga con token fallo; reintentando sin token..."
+        Invoke-WebRequest -Uri $zipUrl -OutFile $zip -UseBasicParsing -TimeoutSec 180 -Headers @{ 'User-Agent' = 'SerchTube-Updater' }
+      } else { throw }
     }
-    Write-Registro "robocopy codigo $($rc.ExitCode)"
-    $despues = (Get-HashArchivo (Join-Path $Raiz 'server.ts')).Substring(0, 8)
+    Expand-Archive -LiteralPath $zip -DestinationPath $temp -Force
+    $carpeta = Get-ChildItem -Path $temp -Directory | Where-Object { $_.Name -like "$nombreRepo-*" } | Select-Object -First 1
+    if (-not $carpeta) { Write-Mal "El ZIP no tiene la estructura esperada."; exit 1 }
+
+    $antes = (Get-HashArchivo (Join-Path $Raiz 'server.ts')); if ($antes) { $antes = $antes.Substring(0, 8) }
+    Write-Paso "Copiando archivos nuevos (sin tocar node_modules, logs ni .env)..."
+    if (Test-Comando 'robocopy') {
+      # En Windows se usa robocopy porque mezcla carpetas correctamente. Con
+      # Copy-Item, si la carpeta destino ya existe, el contenido terminaria
+      # anidado (scripts\scripts).
+      $rc = Start-Process -FilePath 'robocopy.exe' -Wait -PassThru -WindowStyle Hidden -ArgumentList @(
+        "`"$($carpeta.FullName)`"", "`"$Raiz`"",
+        '/E', '/XD', 'node_modules', 'logs', 'dist', '.git', '/XF', '.env*',
+        '/NFL', '/NDL', '/NJH', '/NJS', '/NP', '/R:1', '/W:1'
+      )
+      if ($rc.ExitCode -ge 8) {
+        Write-Mal "La copia de archivos fallo (robocopy codigo $($rc.ExitCode))."
+        exit 1
+      }
+      Write-Registro "robocopy codigo $($rc.ExitCode)"
+    } else {
+      # Fuera de Windows no hay robocopy: copia manual recursiva con las mismas
+      # exclusiones (en Windows real este camino no se usa; sirve para probar).
+      Get-ChildItem -LiteralPath $carpeta.FullName -Force | ForEach-Object {
+        Copy-Tree -Origen $_ -Destino (Join-Path $Raiz $_.Name)
+      }
+    }
+    $despues = (Get-HashArchivo (Join-Path $Raiz 'server.ts')); if ($despues) { $despues = $despues.Substring(0, 8) }
     $antesTitulo = "hash $antes"
     $despuesTitulo = "hash $despues"
     $cambiado = ($antes -ne $despues)
+    if ($cambiado -or -not $versionLocal) {
+      Set-Content -LiteralPath $archivoVersion -Value $(if ($shaRemoto) { $shaRemoto } else { $despues })
+    }
   } finally {
     Remove-Item -Recurse -Force $temp -ErrorAction SilentlyContinue
   }
@@ -312,12 +373,33 @@ if ($necesitaNpm) {
   } finally { Pop-Location }
 }
 
+# ------------------------------------------- 1b) Compilar si es la primera vez
+if ($compilarPrimeraVez -and -not $SinDependencias) {
+  if (Test-Comando 'npm') {
+    Write-Paso "Compilando el proyecto por primera vez (npm run build)..."
+    Push-Location $Raiz
+    try {
+      & npm run build
+      if ($LASTEXITCODE -ne 0) { Write-Aviso "'npm run build' fallo; se probara 'npm run dev'." }
+      else { Write-Paso "Compilacion lista (dist/server.cjs)." }
+    } finally { Pop-Location }
+  } else {
+    Write-Aviso "Sin Node.js no se puede compilar; se intentara 'npm run dev' igualmente."
+  }
+}
+
 # ---------------------------------------------------------- 2) Reiniciar servidor
 $habiaServidor = (@(Get-ServidorPid).Count -gt 0)
 if ($SinReiniciar) {
   Write-Paso "Servidor sin tocar (-SinReiniciar)."
 } elseif (-not $cambiado -and -not $Reiniciar) {
-  Write-Paso "No hubo cambios que aplicar: el servidor queda como estaba ($(if ($habiaServidor) { 'corriendo' } else { 'apagado' }))."
+  if ($habiaServidor) {
+    Write-Paso "No hubo cambios que aplicar: el servidor sigue corriendo."
+  } else {
+    # Sin Git ni npm a mano: el .bat deja la app lista, tambien si estaba apagada
+    Write-Paso "El servidor estaba apagado: se arranca para no tener que ejecutar nada mas."
+    Start-Servidor | Out-Null
+  }
 } else {
   if ($habiaServidor) {
     Stop-Servidor | Out-Null
