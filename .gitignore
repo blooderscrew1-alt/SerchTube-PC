@@ -1,0 +1,14 @@
+node_modules/
+# build/ se ignora por completo: los ejecutables se publican en GitHub Releases
+# (scripts\publicar-release.ps1), asi el repositorio no crece con binarios.
+build/
+dist/
+dev-dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+__pycache__/
+*.pyc
+logs/

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="es" class="dark bg-black text-white">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>SerchTube Music</title>
+    <meta name="description" content="Centro de control multimedia manos libres y asistente de audio inteligente para conducción, descanso y sistemas multi-dispositivo con sincronización de nodos." />
+    <meta property="og:title" content="SerchTube Music" />
+    <meta property="og:description" content="Centro de control multimedia manos libres y asistente de audio inteligente para conducción, descanso y sistemas multi-dispositivo con sincronización de nodos." />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <meta name="theme-color" content="#000000" />
+    <link rel="manifest" href="/manifest.json" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="SerchTube" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" href="/favicon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <!--
+      AUTO-SANEADO (imprescindible): esta app NO registra ningún service worker, pero en
+      navegadores que ya la usaron puede quedar uno viejo de una compilación anterior. Ese
+      service worker sirve un index.html antiguo que pide un assets/index-<hash>.js que ya
+      no existe -> la pantalla se queda BLANCA (con el título visible) en cualquier PC.
+      Aquí se desregistran esos service workers, se borran sus cachés y se recarga una vez
+      para que la página se sirva directamente del servidor. Es idempotente y silencioso.
+    -->
+    <script>
+      (function () {
+        if (!('serviceWorker' in navigator)) return;
+        try {
+          navigator.serviceWorker.getRegistrations().then(function (registros) {
+            if (!registros || registros.length === 0) return;
+            Promise.all(registros.map(function (r) { return r.unregister(); }))
+              .then(function () {
+                var limpiar = (window.caches && caches.keys)
+                  ? caches.keys().then(function (claves) {
+                      return Promise.all(claves.map(function (k) { return caches.delete(k); }));
+                    })
+                  : Promise.resolve();
+                return limpiar;
+              })
+              .then(function () {
+                var clave = 'serchtube_sw_limpiado';
+                if (!sessionStorage.getItem(clave)) {
+                  sessionStorage.setItem(clave, '1');
+                  location.reload();
+                }
+              })
+              .catch(function () {});
+          }).catch(function () {});
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body class="bg-black text-zinc-100 antialiased selection:bg-red-600/30 selection:text-white overflow-x-hidden">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+
