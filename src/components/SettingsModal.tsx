@@ -573,7 +573,6 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
 
   // ─── "Iniciar con Windows" (autoinicio al encender la PC) ───
   const [autoStartEnabled, setAutoStartEnabled] = useState<boolean>(false);
-  const [autoStartSupported, setAutoStartSupported] = useState<boolean>(true);
   const [autoStartLoading, setAutoStartLoading] = useState<boolean>(false);
   const [autoStartMessage, setAutoStartMessage] = useState<string>('');
   useEffect(() => {
@@ -582,11 +581,13 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
       .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
       .then(d => {
         if (cancelled) return;
-        setAutoStartSupported(d.supported !== false);
+        // La seccion siempre es visible; solo reflejamos el estado real.
         setAutoStartEnabled(!!d.enabled);
+        if (d.supported === false && d.message) setAutoStartMessage(d.message);
       })
-      .catch(() => { /* servidor no expone el endpoint (p.ej. dev sin server.ts): ocultar seccion */
-        if (!cancelled) setAutoStartSupported(false);
+      .catch(() => { /* red caida o servidor sin endpoint: mantener seccion visible,
+         el interruptor mostrara un error claro al intentar usarlo */
+        if (!cancelled) setAutoStartMessage('No se pudo consultar el estado del autoinicio.');
       });
     return () => { cancelled = true; };
   }, []);
@@ -2436,8 +2437,8 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
             </div>
           </CollapsibleSection>
 
-          {/* Seccion: Iniciar con Windows (autoinicio al encender la PC) */}
-          {autoStartSupported && (
+          {/* Seccion: Iniciar con Windows (autoinicio al encender la PC) — siempre visible */}
+          {
             <CollapsibleSection
               id="windows_autostart"
               title="Iniciar con Windows"
@@ -2490,7 +2491,7 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
                 </button>
               </div>
             </CollapsibleSection>
-          )}
+          }
 
           {/* Section 3.2: Equalizer Master Switch & Hardware Audio Processing */}
           <CollapsibleSection

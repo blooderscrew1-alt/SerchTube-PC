@@ -248,14 +248,15 @@ function runStartupPowerShell(args: string[], timeoutMs: number): Promise<{ code
 }
 
 app.get("/api/system/auto-start-status", (_req, res) => {
+  // La seccion de Ajustes SIEMPRE se muestra; aqui solo informamos el estado real.
   if (process.platform !== "win32") {
-    return res.json({ supported: false, enabled: false, platform: process.platform });
+    return res.json({ supported: false, enabled: false, platform: process.platform, message: "El autoinicio solo esta disponible en Windows" });
   }
   // Fuente de verdad: el propio launcher, que revisa acceso directo + clave Run
   runStartupPowerShell(["-MostrarEstadoAutoInicio"], 15000)
     .then((result) => {
       const enabled = /AUTOINICIO=ACTIVADO/.test(result.stdout);
-      res.json({ supported: true, enabled, platform: process.platform });
+      res.json({ supported: true, enabled, platform: process.platform, launcherCode: result.code });
     })
     .catch((err) => {
       // Respaldo por si el ps1 no esta disponible: comprobacion directa
