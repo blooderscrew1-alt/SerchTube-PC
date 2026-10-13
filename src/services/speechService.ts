@@ -112,42 +112,35 @@ export interface WakeWordParseResult {
 }
 
 /**
- * Variantes y deformaciones fonéticas habituales de la palabra "música"
+ * Variantes fonéticas legítimas de la palabra "música" reportadas por motores de voz
  */
 const MUSICA_VARIANTS = new Set([
   'musica', 'música', 'music', 'músic', 'musik', 'musicas', 'músicas',
-  'musi', 'músi', 'musico', 'músico', 'musca', 'mujica', 'misica', 'nusica',
-  'muica', 'muscia', 'musicaa', 'músicaa', 'musika', 'muzika', 'musika',
-  'mussica', 'musica', 'mussika', 'musicá', 'musiká', 'músika', 'mucica',
-  'mucisa', 'musisa', 'musira', 'muusica', 'musiica', 'musicaa', 'musíca',
-  'musíka', 'musika', 'mhmusica', 'la musica', 'amusica'
+  'musika', 'muzika', 'mussica', 'muusica', 'musiica', 'musicaa'
 ]);
 
 /**
- * ¿La palabra se parece suficiente a "musica" para considerarla la palabra de activación?
- * Tolerancia adaptada al reconocimiento real de voz (2 errores si empieza con "mu", 1 si no).
+ * Palabras comunes del español que suenan vagamente parecido pero NO son la palabra clave.
+ * Se bloquean explícitamente para evitar falsos positivos y activación accidental del micrófono.
  */
-function fuzzyMatchMusica(w: string): boolean {
-  if (w.length < 4 || w.length > 9) return false;
-  const dist = levenshteinDistance(w, 'musica');
-  // Empieza con "mu" (lo más estable del audio): se toleran hasta 2 deformaciones
-  if (w.startsWith('mu') && dist <= 2) return true;
-  // Sin prefijo estable: exigir casi exactitud
-  if (dist <= 1) return true;
-  return false;
-}
+const NON_WAKEWORD_WORDS = new Set([
+  'museo', 'muslo', 'multa', 'mural', 'mundo', 'mudo', 'muda', 'mula',
+  'musa', 'musas', 'musgo', 'musico', 'músico', 'músicos', 'musicos',
+  'mucho', 'mucha', 'muchos', 'muchas', 'mujer', 'mujeres', 'muestra',
+  'muerte', 'muerto', 'mueva', 'mutua', 'mueca', 'fisica', 'basica',
+  'clasica', 'mus', 'musi', 'músi', 'misica', 'nusica', 'mujica'
+]);
 
 /**
- * Verbos y órdenes musicales directas que activan la acción sin necesidad de gritar "música"
+ * ¿La palabra se parece con certeza a "musica" como palabra de activación?
+ * Exige longitud adecuada, distancia máxima de 1 cambio y descarta palabras del idioma comunes.
  */
-const DIRECT_MUSIC_VERBS = [
-  'reproduce', 'reproducir', 'reproduceme', 'reprodúceme',
-  'ponme', 'pon', 'ponte', 'poner', 'pón',
-  'toca', 'tocar', 'tocame', 'tócame',
-  'escuchar', 'escucha', 'quiero escuchar', 'quiero oir', 'quiero oír',
-  'play', 'siguiente', 'anterior', 'pausa', 'pausar', 'reanuda', 'reanudar',
-  'continua', 'continuar', 'sube volumen', 'baja volumen', 'silencio', 'silenciar'
-];
+function fuzzyMatchMusica(w: string): boolean {
+  if (!w || w.length < 5 || w.length > 8) return false;
+  if (NON_WAKEWORD_WORDS.has(w)) return false;
+  const dist = levenshteinDistance(w, 'musica');
+  return dist <= 1;
+}
 
 export function parseWakeWord(transcript: string, wakeWord: string = "música"): WakeWordParseResult {
   const normTranscript = normalizeText(transcript);
@@ -157,15 +150,14 @@ export function parseWakeWord(transcript: string, wakeWord: string = "música"):
     return { hasWakeWord: false, commandText: '', isWakeWordOnly: false };
   }
 
-  // 1. Verificación directa de la palabra clave configurada (con límites de palabra:
-  // "musicaa" debe tratarse como variante completa, no como "musica" + "a")
+  // 1. Verificación directa con límites de palabra para la palabra clave configurada
   const boundaryRegex = new RegExp(`(?:^|\\s)${normWakeWord}(?=\\s|$)`);
   const boundaryMatch = normTranscript.match(boundaryRegex);
   let wakeWordIndex = boundaryMatch ? boundaryMatch.index + boundaryMatch[0].indexOf(normWakeWord) : -1;
   let matchedLength = normWakeWord.length;
   let matchedKeyword = normWakeWord;
 
-  // 2. Si la palabra configurada es "música" o similar, cotejar con las variantes fonéticas
+  // 2. Si la palabra configurada es "música" o similar, cotejar con las variantes fonéticas estrictas
   if (wakeWordIndex === -1 && (normWakeWord === 'musica' || normWakeWord === 'musicas')) {
     const words = normTranscript.split(/\s+/);
     let cumulativeOffset = 0;
@@ -175,7 +167,7 @@ export function parseWakeWord(transcript: string, wakeWord: string = "música"):
       const wordIdx = normTranscript.indexOf(w, cumulativeOffset);
       cumulativeOffset = wordIdx + w.length;
 
-      // Coincidencia con lista de variantes
+      // Coincidencia con lista de variantes legítimas (no palabras comunes)
       if (MUSICA_VARIANTS.has(w)) {
         wakeWordIndex = wordIdx;
         matchedLength = w.length;
@@ -183,21 +175,7 @@ export function parseWakeWord(transcript: string, wakeWord: string = "música"):
         break;
       }
 
-      // Palabra cortada por el motor: "mu sica", "mu si ca" -> unir con las siguientes
-      let joined = w;
-      for (let k = i + 1; k < Math.min(i + 3, words.length); k++) {
-        joined += words[k];
-        if (MUSICA_VARIANTS.has(joined) || fuzzyMatchMusica(joined)) {
-          const joinedEnd = normTranscript.indexOf(words[k], cumulativeOffset) + words[k].length;
-          wakeWordIndex = wordIdx;
-          matchedLength = joinedEnd - wordIdx;
-          matchedKeyword = joined;
-          break;
-        }
-      }
-      if (wakeWordIndex !== -1) break;
-
-      // Tolerancia fonética amplia adaptada a voz real
+      // Tolerancia fonética estricta (distancia <= 1 y nunca palabras en blacklist)
       if (fuzzyMatchMusica(w)) {
         wakeWordIndex = wordIdx;
         matchedLength = w.length;
@@ -207,13 +185,14 @@ export function parseWakeWord(transcript: string, wakeWord: string = "música"):
     }
   }
 
-  // 3. Soporte para prefijos habituales ("oye música", "hey música", "serch", "oye serch")
+  // 3. Soporte para prefijos de invocación habituales ("oye música", "hey música", "serch", "serchtube")
   if (wakeWordIndex === -1) {
     const conversationalPrefixes = ['oye musica', 'hey musica', 'hola musica', 'ok musica', 'oye serch', 'serchtube', 'serch'];
     for (const prefix of conversationalPrefixes) {
-      const pIdx = normTranscript.indexOf(prefix);
-      if (pIdx !== -1) {
-        wakeWordIndex = pIdx;
+      const prefixRegex = new RegExp(`(?:^|\\s)${prefix}(?=\\s|$)`);
+      const pMatch = normTranscript.match(prefixRegex);
+      if (pMatch) {
+        wakeWordIndex = pMatch.index + pMatch[0].indexOf(prefix);
         matchedLength = prefix.length;
         matchedKeyword = prefix;
         break;
@@ -221,30 +200,16 @@ export function parseWakeWord(transcript: string, wakeWord: string = "música"):
     }
   }
 
-  // 4. Reconocimiento de órdenes directas con verbos musicales ("reproduce maná", "pon coldplay", "siguiente")
-  // Permite que el usuario hable con naturalidad sin tener que gritar la palabra clave
-  if (wakeWordIndex === -1) {
-    for (const verb of DIRECT_MUSIC_VERBS) {
-      if (normTranscript.startsWith(verb + ' ') || normTranscript === verb) {
-        const cleanCommand = normTranscript.trim();
-        return {
-          hasWakeWord: true,
-          commandText: cleanCommand,
-          isWakeWordOnly: false,
-          matchedKeyword: verb
-        };
-      }
-    }
-  }
-
+  // NOTA: Cuando la palabra clave está activa, NUNCA activar por verbos sueltos ("pon", "toca", "reproduce")
+  // para evitar falsos positivos de conversaciones ambientales ("pon la mesa", "toca la puerta", etc.)
   if (wakeWordIndex === -1) {
     return { hasWakeWord: false, commandText: '', isWakeWordOnly: false };
   }
 
-  // Extract text after the wake word
+  // Extraer el texto posterior a la palabra clave
   const afterWakeWord = normTranscript.slice(wakeWordIndex + matchedLength).trim();
 
-  // Strip leading filler words if present ("de", "que", "por favor", etc.)
+  // Limpiar palabras conectoras habituales al dictar una orden ("de", "que", "por favor", etc.)
   const cleanCommand = afterWakeWord
     .replace(/^(de|que|por favor|a ver|y|me|nos)\s+/, '')
     .trim();
@@ -510,9 +475,8 @@ export class SpeechService {
 
           let candidate = rawCandidate;
 
-          // 🔁 Rescate por alternativas: si la interpretación principal no contiene la palabra
-          // de activación pero una alternativa sí, usar esa alternativa como transcripción.
-          if (this.config.wakeWordEnabled !== false && alternatives.length > 0) {
+          // 🔁 Rescate por alternativas: solo sobre frases finalizadas para no activar falsos positivos con ruido intermedio
+          if (this.config.wakeWordEnabled !== false && alternatives.length > 0 && finalTranscript.trim()) {
             const mainHit = parseWakeWord(candidate, this.config.wakeWord || 'música').hasWakeWord;
             if (!mainHit) {
               for (const alt of alternatives) {

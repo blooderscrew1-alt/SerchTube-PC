@@ -10,6 +10,7 @@ import {
   cleanSearchQuery,
   scrapeYouTubeVideos,
   scrapeYouTubeMix,
+  buildArtistAndMixPlaylist,
   hasAgeRestrictionMarkers,
   isYouTubeVideoRestricted,
   type CatalogTrack
@@ -743,30 +744,9 @@ export async function searchGoogleForVideo(
 
     console.log(`[GoogleSearch] 🎯 Video musical resuelto en Google Videos #1: "${topTrack.title}" (${topTrack.id}) - Artista: "${topTrack.artist}"`);
 
-    // Construir la cola continua con los videos devueltos por Google
-    const fullPlaylist: CatalogTrack[] = [topTrack];
-    const seenIds = new Set<string>([topTrack.id]);
-
-    for (const item of googleVideos.slice(1)) {
-      if (item && item.id && !seenIds.has(item.id)) {
-        seenIds.add(item.id);
-        fullPlaylist.push(item);
-      }
-    }
-
-    // Si Google devolvió menos de 10 canciones, enriquecer con búsquedas complementarias en YouTube
-    if (fullPlaylist.length < 10) {
-      try {
-        const ytExtras = await scrapeYouTubeVideos(query, 12);
-        for (const yt of ytExtras) {
-          if (yt && yt.id && !seenIds.has(yt.id) && !isNonMusicVideo(yt.title, yt.duration)) {
-            seenIds.add(yt.id);
-            fullPlaylist.push(yt);
-            if (fullPlaylist.length >= 20) break;
-          }
-        }
-      } catch {}
-    }
+    // Construir la cola continua con la lista de reproducción del artista y YouTube Mix
+    // asegurando que la pista #1 suene primero y las siguientes sean otras canciones del artista / radio
+    const fullPlaylist = await buildArtistAndMixPlaylist(topTrack, query, isArtistOnly);
 
     return {
       videoId: topTrack.id,
@@ -787,13 +767,14 @@ export async function searchGoogleForVideo(
 
     if (candidates.length > 0) {
       const top = candidates[0];
+      const fullPlaylist = await buildArtistAndMixPlaylist(top, query, isArtistOnly);
       return {
         videoId: top.id,
         title: top.title,
         artist: top.artist,
         thumbnail: top.thumbnail,
         duration: top.duration,
-        items: candidates
+        items: fullPlaylist
       };
     }
   } catch (err) {

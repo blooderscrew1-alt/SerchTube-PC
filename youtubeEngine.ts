@@ -860,6 +860,134 @@ export async function searchYouTubePlaylistId(query: string): Promise<string | n
 }
 
 /**
+ * Construye una lista de reproducción y cola continua del artista estilo YouTube Mix / Radio.
+ * Pista #1: La canción exacta solicitada.
+ * Pistas #2..N: Éxitos adicionales del MISMO artista y canciones afines vía YouTube Mix,
+ * garantizando que la MISMA canción NO se repita de otros canales (vídeo oficial, letra, re-subidas, etc.).
+ */
+export async function buildArtistAndMixPlaylist(
+  topTrack: CatalogTrack,
+  query: string = '',
+  isArtistOnly: boolean = false
+): Promise<CatalogTrack[]> {
+  const fullPlaylist: CatalogTrack[] = [topTrack];
+  const seenIds = new Set<string>([topTrack.id]);
+
+  // 1. Deducir y limpiar el nombre del artista principal
+  let candidateArtist = (topTrack.artist || '').trim();
+  const rawTitle = topTrack.title || '';
+
+  // Limpiar sufijos típicos de canales de YouTube en el artista
+  candidateArtist = candidateArtist
+    .replace(/\s*-\s*topic$/i, '')
+    .replace(/\s*vevo$/i, '')
+    .replace(/\s*official(\s*channel)?$/i, '')
+    .trim();
+
+  // Si el título contiene "Artista - Canción", extraer el artista de ahí si es más confiable
+  if (rawTitle.includes(' - ')) {
+    const parts = rawTitle.split(/\s*-\s*/);
+    const possibleArtist = parts[0].trim();
+    if (
+      possibleArtist.length >= 2 &&
+      (!candidateArtist || candidateArtist.toLowerCase() === 'youtube' || candidateArtist.toLowerCase().includes('cancion'))
+    ) {
+      candidateArtist = possibleArtist;
+    }
+  }
+
+  // Si aún no tenemos artista claro, intentar extraer de la consulta de búsqueda
+  if (!candidateArtist || candidateArtist.toLowerCase() === 'youtube') {
+    const parts = query.split(/\s*-\s*|\s+de\s+|\s+por\s+/i);
+    if (parts.length > 1) {
+      candidateArtist = parts[parts.length - 1].trim();
+    } else {
+      candidateArtist = query.trim();
+    }
+  }
+
+  console.log(`[ArtistMixEngine] 🎵 Generando cola de artista y YouTube Mix para: "${topTrack.title}" (${topTrack.id}) - Artista: "${candidateArtist}"`);
+
+  try {
+    // 2. Obtener en paralelo:
+    // a) YouTube Mix oficial de la canción (list=RD[videoId])
+    // b) Más canciones populares del MISMO artista
+    // c) Éxitos adicionales del artista
+    const [mixTracks, artistHits1, artistHits2] = await Promise.all([
+      scrapeYouTubeMix(topTrack.id).catch(() => []),
+      candidateArtist && candidateArtist.length > 1
+        ? scrapeYouTubeVideos(`${candidateArtist} canciones populares official music video`, 12).catch(() => [])
+        : Promise.resolve([]),
+      candidateArtist && candidateArtist.length > 1
+        ? scrapeYouTubeVideos(`${candidateArtist} greatest hits official video`, 10).catch(() => [])
+        : Promise.resolve([])
+    ]);
+
+    // Pool de candidatos priorizando:
+    // 1) Más canciones del mismo artista (para reproducir la discografía / lista del artista)
+    // 2) YouTube Mix oficial de la pista #1
+    const candidatePool = [
+      ...artistHits1,
+      ...artistHits2,
+      ...mixTracks
+    ];
+
+    // Helper local para extraer título base de la canción
+    const cleanSongPart = (t: string) => {
+      const part = extractSongPart(t);
+      return (part || cleanTitleForComparison(t)).replace(/[^a-z0-9]/g, '');
+    };
+
+    const topSongKey = cleanSongPart(topTrack.title);
+
+    for (const item of candidatePool) {
+      if (!item || !item.id || seenIds.has(item.id)) continue;
+      if (isNonMusicVideo(item.title, item.duration)) continue;
+      if (isLowQualityVideo(item.title, item.artist)) continue;
+      if (isCompilationOrMix(item.title)) continue;
+
+      // 🛡️ REGLA DE ORO ANTI-REPETICIÓN:
+      // Jamás añadir la MISMA canción que la pista #1 bajo otro título o canal
+      if (areSameSong(item.title, topTrack.title, query)) continue;
+
+      // Comparación estricta de parte de canción
+      const itemSongKey = cleanSongPart(item.title);
+      if (topSongKey && itemSongKey && (topSongKey === itemSongKey || itemSongKey.includes(topSongKey) || topSongKey.includes(itemSongKey))) {
+        continue;
+      }
+
+      // Evitar canciones duplicadas entre sí en la cola
+      let isRepeatInQueue = false;
+      for (const existing of fullPlaylist) {
+        if (areSameSong(item.title, existing.title)) {
+          isRepeatInQueue = true;
+          break;
+        }
+        const existingKey = cleanSongPart(existing.title);
+        if (existingKey && itemSongKey && existingKey === itemSongKey) {
+          isRepeatInQueue = true;
+          break;
+        }
+      }
+      if (isRepeatInQueue) continue;
+
+      seenIds.add(item.id);
+      fullPlaylist.push({
+        ...item,
+        artist: item.artist || candidateArtist,
+        thumbnail: item.thumbnail || `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`
+      });
+
+      if (fullPlaylist.length >= 35) break;
+    }
+  } catch (err) {
+    console.warn('[ArtistMixEngine] Error generando cola de artista:', err);
+  }
+
+  return fullPlaylist;
+}
+
+/**
  * MOTOR PRINCIPAL DE BÚSQUEDA Y GENERACIÓN DE COLA INFINITA
  * 1. Encuentra con precisión milimétrica la canción exacta solicitada (Pista #1)
  * 2. Genera automáticamente una cola continua de 30-40 canciones recomendadas
@@ -1363,7 +1491,7 @@ export async function searchYouTubeMusicSmart(
   anotar(`candidatos totales evaluados: ${pool.length}`);
   console.log('[BusquedaVoz] ' + diagnostico.join('\n[BusquedaVoz] '));
 
-  const ordenados = [elegido, ...pool.filter(t => t.id !== elegido.id)];
+  const ordenados = await buildArtistAndMixPlaylist(elegido, rawQuery, isArtistOnly);
   return {
     items: ordenados,
     firstTrack: elegido,

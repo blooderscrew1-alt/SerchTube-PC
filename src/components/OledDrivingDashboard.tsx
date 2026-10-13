@@ -125,6 +125,23 @@ const DEFAULT_BOTTOM_BAR_LAYOUT: BottomBarLayoutConfig = {
   alignItems: 'center'
 };
 
+// Helper para normalizar el título y evitar canciones repetidas en la vista
+const getDedupKey = (title: string): string => {
+  if (!title) return "";
+  const parts = title.split(/\s*-\s*|\s*\|\s*|\s*:\s*/);
+  const candidate = parts.length > 1 ? parts[1] : parts[0];
+  return candidate
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\(.*?\)|\[.*?\]|\{.*?\}/g, " ")
+    .replace(/lyrics?\s+on\s+screen|with\s+lyrics?|con\s+letras?|letra\s+completa|lyrics?|letras?/gi, " ")
+    .replace(/official\s+(music\s+)?video|official\s+audio|video\s+oficial|audio\s+oficial|videoclip/gi, " ")
+    .replace(/en\s+vivo|live|acoustic|ac[uú]stico|visualizer|audio|video|full\s+song/gi, " ")
+    .replace(/[^a-z0-9]/g, "")
+    .trim();
+};
+
 const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
   playerState,
   systemStatus,
@@ -465,10 +482,13 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
     // Build upcoming 20 songs queue for satellite display (including current song at #1)
     const displayQueue: Track[] = [];
     const seenIds = new Set<string>();
+    const seenKeys = new Set<string>();
 
     const activeTrack = playerState.currentTrack || (playlistQueue && playlistQueue[playlistIndex]);
     if (activeTrack && activeTrack.id) {
       seenIds.add(activeTrack.id);
+      const k = getDedupKey(activeTrack.title);
+      if (k) seenKeys.add(k);
       displayQueue.push({
         ...activeTrack,
         thumbnail: activeTrack.thumbnail && !activeTrack.thumbnail.includes('unsplash')
@@ -482,30 +502,36 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
       for (let i = startIdx; i < playlistQueue.length; i++) {
         if (displayQueue.length >= 20) break;
         const track = playlistQueue[i];
-        if (track && track.id && !seenIds.has(track.id)) {
-          seenIds.add(track.id);
-          displayQueue.push({
-            ...track,
-            thumbnail: track.thumbnail && !track.thumbnail.includes('unsplash')
-              ? track.thumbnail
-              : `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg`
-          });
-        }
+        if (!track || !track.id || seenIds.has(track.id)) continue;
+        const k = getDedupKey(track.title);
+        if (k && seenKeys.has(k)) continue;
+
+        seenIds.add(track.id);
+        if (k) seenKeys.add(k);
+        displayQueue.push({
+          ...track,
+          thumbnail: track.thumbnail && !track.thumbnail.includes('unsplash')
+            ? track.thumbnail
+            : `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg`
+        });
       }
 
       if (displayQueue.length < 20) {
         for (let i = 0; i < Math.min(startIdx - 1, playlistQueue.length); i++) {
           if (displayQueue.length >= 20) break;
           const track = playlistQueue[i];
-          if (track && track.id && !seenIds.has(track.id)) {
-            seenIds.add(track.id);
-            displayQueue.push({
-              ...track,
-              thumbnail: track.thumbnail && !track.thumbnail.includes('unsplash')
-                ? track.thumbnail
-                : `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg`
-            });
-          }
+          if (!track || !track.id || seenIds.has(track.id)) continue;
+          const k = getDedupKey(track.title);
+          if (k && seenKeys.has(k)) continue;
+
+          seenIds.add(track.id);
+          if (k) seenKeys.add(k);
+          displayQueue.push({
+            ...track,
+            thumbnail: track.thumbnail && !track.thumbnail.includes('unsplash')
+              ? track.thumbnail
+              : `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg`
+          });
         }
       }
     }
@@ -1132,9 +1158,25 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
         : (t.id ? `https://i.ytimg.com/vi/${t.id}/hqdefault.jpg` : '')
     });
     const cola = Array.isArray(playlistQueue) ? playlistQueue.filter(t => t && t.id) : [];
-    if (cola.length > 0) return cola.map(normalizar);
-    const actual = playerState.currentTrack;
-    return actual && actual.id ? [normalizar(actual)] : [];
+    if (cola.length === 0) {
+      const actual = playerState.currentTrack;
+      return actual && actual.id ? [normalizar(actual)] : [];
+    }
+
+    const unicos: Track[] = [];
+    const seenIds = new Set<string>();
+    const seenKeys = new Set<string>();
+
+    for (const t of cola) {
+      if (!t || !t.id || seenIds.has(t.id)) continue;
+      const k = getDedupKey(t.title);
+      if (unicos.length > 0 && k && seenKeys.has(k)) continue;
+      seenIds.add(t.id);
+      if (k) seenKeys.add(k);
+      unicos.push(normalizar(t));
+    }
+
+    return unicos;
   }, [playlistQueue, playerState.currentTrack]);
 
   // Posicion de la cancion que esta sonando dentro de la lista mostrada

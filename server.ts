@@ -1620,7 +1620,43 @@ function parseVoiceCommandLocally(transcript: string, personality: string, curre
     /(?:canciones|musica|música|exitos|éxitos|discografia|discografía|lo mejor|todo)\s+de\s+/i.test(text) ||
     /^(?:pon\s+a|reproduce\s+a|escuchar\s+a)\s+/i.test(text);
 
-  if (searchTarget.length > 0) {
+  const hasExplicitMusicVerb =
+    /^(?:por\s+favor\s+)?(?:oye\s+serch\s+|serch\s+)?(?:m[uú]sica\s+)?(?:pon|ponme|ponte|reproduce|reproducir|toca|tocar|quiero\s+escuchar|quiero\s+o[ií]r|escuchar|play|busca|buscar)\b/i.test(text) ||
+    /^(?:canciones|m[uú]sica|[eé]xitos|discograf[ií]a|lo\s+mejor|todo)\s+de\s+/i.test(text);
+
+  // Filtro de frases conversacionales, preguntas y charlas cotidianas que NO son peticiones musicales
+  const isGreeting = /^(?:hola|buenos\s+d[ií]as|buenas\s+tardes|buenas\s+noches|qu[eé]\s+tal|c[oó]mo\s+est[aá]s)(?:\s|$)/i.test(searchTarget);
+  const isTimeQuestion = /^(?:qu[eé]\s+hora\s+es|la\s+hora|dime\s+la\s+hora|qu[eé]\s+hora\s+tienes|qu[eé]\s+hora\s+ser[aá])(?:\s|$)/i.test(searchTarget);
+  const isConversationalChatter =
+    /^(?:vamos\s+a|tengo\s+que|tienes\s+que|hay\s+que|no\s+s[eé]|no\s+se|yo\s+creo|me\s+parece|a\s+ver\s+si|dile\s+que|mira\s+esto|mira\s+eso|espera|esp[eé]rate|ya\s+vengo|ya\s+voy|estoy\s+en|hace\s+fr[ií]o|hace\s+calor|no\s+pasa\s+nada|no\s+me\s+digas|en\s+serio|por\s+cierto|cuidado|oye\s+mira|se\s+me\s+olvid[oó]|acabo\s+de|apaga\s+la\s+luz|cierra\s+la|abre\s+la|p[aá]same|tr[aá]eme|d[oó]nde\s+dejaste|ad[oó]nde\s+vas|muchas\s+gracias|gracias|de\s+nada|hasta\s+luego|adi[oó]s|chao|chau)(?:\s|$)/iu.test(searchTarget) ||
+    /^(?:si|s[ií]|no|ok|vale|bueno|claro|seguro|ya|aj[aá]|bien|nada|eso|esto|aquello|ah[ií]|aqu[ií]|entonces|luego|despu[eé]s|tampoco|tambi[eé]n|cosa|cosas|que|de|la|el|un|una)$/i.test(searchTarget);
+
+  if (isGreeting) {
+    return {
+      action: 'greeting',
+      speechFeedback: '¡Hola! ¿Qué música o artista te gustaría escuchar?'
+    };
+  }
+
+  if (isTimeQuestion) {
+    const now = new Date();
+    const hrs = now.getHours();
+    const mins = String(now.getMinutes()).padStart(2, '0');
+    return {
+      action: 'time_info',
+      speechFeedback: `Son las ${hrs}:${mins}.`
+    };
+  }
+
+  // Si es charla cotidiana sin verbo musical explícito, JAMÁS arrancar una canción aleatoria
+  if (isConversationalChatter && !hasExplicitMusicVerb) {
+    return {
+      action: 'unknown',
+      speechFeedback: 'No reconocí ninguna orden musical. Di "Música, reproduce" seguido del nombre del tema o artista.'
+    };
+  }
+
+  if (searchTarget.length >= 2) {
     if (isExplicitArtistRequest) {
       return {
         action: 'play_artist',
@@ -2262,7 +2298,10 @@ app.get("/api/youtube/related", async (req, res) => {
       // Filtrar por coherencia estricta de género
       if (!isTrackGenreCoherent(t, context)) continue;
 
-      // Evitar canciones duplicadas
+      // 🛡️ REGLA ANTI-REPETICIÓN: Jamás re-introducir la canción actual en la cola
+      if (title && areSameSong(t.title, title, title)) continue;
+
+      // Evitar canciones duplicadas entre sí en la cola
       let isRepeat = false;
       for (const existing of unique) {
         if (areSameSong(t.title, existing.title)) {

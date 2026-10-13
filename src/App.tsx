@@ -266,11 +266,34 @@ export default function App() {
       .replace(/[\u0300-\u036f]/g, "")
       .replace(/&/g, " and ")
       .replace(/\(.*?\)|\[.*?\]|\{.*?\}/g, " ")
-      .replace(/lyrics?\s+on\s+screen|with\s+lyrics?|con\s+letras?|lyrics?|letras?/gi, " ")
-      .replace(/official\s+(music\s+)?video|official\s+audio|video\s+oficial|audio\s+oficial/gi, " ")
+      .replace(/lyrics?\s+on\s+screen|with\s+lyrics?|con\s+letras?|letra\s+completa|lyrics?|letras?/gi, " ")
+      .replace(/official\s+(music\s+)?video|official\s+audio|video\s+oficial|audio\s+oficial|videoclip(\s+oficial)?/gi, " ")
       .replace(/explicit(\s+version)?|clean(\s+version)?|remaster(ed)?/gi, " ")
+      .replace(/en\s+vivo|live|acoustic|ac[uú]stico|visualizer|audio|video|full\s+song/gi, " ")
       .replace(/[^a-z0-9]/g, "")
       .trim();
+  };
+
+  const extractSongPartForDedup = (title: string): string => {
+    if (!title) return "";
+    const parts = title.split(/\s*-\s*|\s*\|\s*|\s*:\s*/);
+    const candidate = parts.length > 1 ? parts[1] : parts[0];
+    return normalizeSongKeyForDedup(candidate) || normalizeSongKeyForDedup(title);
+  };
+
+  const areSameSongClient = (titleA: string, titleB: string): boolean => {
+    if (!titleA || !titleB) return false;
+    const fullA = normalizeSongKeyForDedup(titleA);
+    const fullB = normalizeSongKeyForDedup(titleB);
+    if (fullA && fullB && fullA === fullB) return true;
+
+    const partA = extractSongPartForDedup(titleA);
+    const partB = extractSongPartForDedup(titleB);
+    if (partA && partB && partA === partB) return true;
+    if (partA && partB && partA.length >= 4 && partB.length >= 4) {
+      if (partA.includes(partB) || partB.includes(partA)) return true;
+    }
+    return false;
   };
 
   // Build upcoming 20 songs queue helper (index 0 is current song playing, with real thumbnail and title)
@@ -282,7 +305,9 @@ export default function App() {
     if (current && current.id) {
       seen.add(current.id);
       const key = normalizeSongKeyForDedup(current.title);
+      const partKey = extractSongPartForDedup(current.title);
       if (key) seenKeys.add(key);
+      if (partKey) seenKeys.add(partKey);
       list.push({
         ...current,
         thumbnail: current.thumbnail && !current.thumbnail.includes('unsplash')
@@ -299,11 +324,15 @@ export default function App() {
         if (list.length >= 20) break;
         const t = q[i];
         if (!t || !t.id || seen.has(t.id)) continue;
+        if (current && areSameSongClient(t.title, current.title)) continue;
         const key = normalizeSongKeyForDedup(t.title);
+        const partKey = extractSongPartForDedup(t.title);
         if (key && seenKeys.has(key)) continue;
+        if (partKey && seenKeys.has(partKey)) continue;
 
         seen.add(t.id);
         if (key) seenKeys.add(key);
+        if (partKey) seenKeys.add(partKey);
         list.push({
           ...t,
           thumbnail: t.thumbnail && !t.thumbnail.includes('unsplash')
@@ -317,11 +346,15 @@ export default function App() {
           if (list.length >= 20) break;
           const t = q[i];
           if (!t || !t.id || seen.has(t.id)) continue;
+          if (current && areSameSongClient(t.title, current.title)) continue;
           const key = normalizeSongKeyForDedup(t.title);
+          const partKey = extractSongPartForDedup(t.title);
           if (key && seenKeys.has(key)) continue;
+          if (partKey && seenKeys.has(partKey)) continue;
 
           seen.add(t.id);
           if (key) seenKeys.add(key);
+          if (partKey) seenKeys.add(partKey);
           list.push({
             ...t,
             thumbnail: t.thumbnail && !t.thumbnail.includes('unsplash')
@@ -1548,6 +1581,12 @@ export default function App() {
             }
           } else if (isAwaitingCommandRef.current) {
             // User previously activated wake word, and now spoke the command in a follow-up sentence
+            const cleanCandidate = (transcript || '').trim();
+            // Descartar ruidos residuales, carraspeos, monosílabos o suspiros ambientales
+            if (!cleanCandidate || cleanCandidate.length < 2 || /^(eh|um|ah|este|mm|mmm|shh|si|no)$/i.test(cleanCandidate)) {
+              return;
+            }
+
             setIsScreensaverActive(false);
             if (activeListeningTimerRef.current) clearTimeout(activeListeningTimerRef.current);
             setIsAwaitingCommandAfterWakeWord(false);
@@ -1943,11 +1982,20 @@ export default function App() {
         for (const item of rawItems) {
           if (!item || !item.id || seenIds.has(item.id)) continue;
           if (/\b(?:240p|360p|144p|low\s*quality|low\s*res|baja\s*calidad)\b/i.test(item.title)) continue;
-          const key = normalizeSongKeyForDedup(item.title);
-          if (normalizedQueue.length > 0 && key && seenKeys.has(key)) continue;
+          const fullKey = normalizeSongKeyForDedup(item.title);
+          const partKey = extractSongPartForDedup(item.title);
+
+          if (normalizedQueue.length > 0) {
+            const first = normalizedQueue[0];
+            // 🛡️ REGLA ANTI-REPETICIÓN: Jamás admitir la misma canción que la pista #1 bajo otro canal
+            if (areSameSongClient(item.title, first.title)) continue;
+            if (fullKey && seenKeys.has(fullKey)) continue;
+            if (partKey && seenKeys.has(partKey)) continue;
+          }
 
           seenIds.add(item.id);
-          if (key) seenKeys.add(key);
+          if (fullKey) seenKeys.add(fullKey);
+          if (partKey) seenKeys.add(partKey);
           normalizedQueue.push({
             ...item,
             thumbnail: item.thumbnail && !item.thumbnail.includes('unsplash')
@@ -1966,6 +2014,35 @@ export default function App() {
           isPlaying: true,
           currentTime: 0
         }));
+
+        // Si la cola tiene pocas canciones, enriquecerla en segundo plano con la lista del artista y YouTube Mix
+        if (normalizedQueue.length < 10 && selected && selected.id) {
+          fetch(`/api/youtube/related?videoId=${selected.id}&artist=${encodeURIComponent(selected.artist || '')}&title=${encodeURIComponent(selected.title || '')}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(relData => {
+              if (relData && relData.items && Array.isArray(relData.items) && relData.items.length > 0) {
+                const freshTracks: Track[] = [];
+                const currentIds = new Set(normalizedQueue.map(t => t.id));
+                const currentKeys = new Set(normalizedQueue.map(t => normalizeSongKeyForDedup(t.title)).filter(Boolean));
+                for (const it of relData.items) {
+                  if (!it || !it.id || currentIds.has(it.id)) continue;
+                  if (areSameSongClient(it.title, selected.title)) continue;
+                  const k = normalizeSongKeyForDedup(it.title);
+                  const pk = extractSongPartForDedup(it.title);
+                  if (k && currentKeys.has(k)) continue;
+                  if (pk && currentKeys.has(pk)) continue;
+                  currentIds.add(it.id);
+                  if (k) currentKeys.add(k);
+                  if (pk) currentKeys.add(pk);
+                  freshTracks.push(it);
+                }
+                if (freshTracks.length > 0) {
+                  setPlaylistQueue(prev => [...prev, ...freshTracks]);
+                }
+              }
+            })
+            .catch(() => {});
+        }
 
         // 🛡️ Seguridad post-reproducción: cerrar escucha activa, volver a modo espera de palabra clave y blindar micro contra altavoces
         enforcePostPlaybackMicSafety();
@@ -3306,11 +3383,21 @@ export default function App() {
 
           for (const it of evt.items) {
             if (!it || !it.id || seenIds.has(it.id)) continue;
-            const key = normalizeSongKeyForDedup(it.title);
-            if (formattedItems.length > 0 && key && seenKeys.has(key)) continue;
+            const fullKey = normalizeSongKeyForDedup(it.title);
+            const partKey = extractSongPartForDedup(it.title);
+
+            if (formattedItems.length > 0) {
+              const first = formattedItems[0];
+              // 🛡️ REGLA ANTI-REPETICIÓN: Jamás admitir la misma canción que la pista #1 bajo otro canal
+              if (areSameSongClient(it.title, first.title)) continue;
+              if (areSameSongClient(it.title, newTrack.title)) continue;
+              if (fullKey && seenKeys.has(fullKey)) continue;
+              if (partKey && seenKeys.has(partKey)) continue;
+            }
 
             seenIds.add(it.id);
-            if (key) seenKeys.add(key);
+            if (fullKey) seenKeys.add(fullKey);
+            if (partKey) seenKeys.add(partKey);
             formattedItems.push({
               id: it.id,
               title: it.title,
@@ -3322,6 +3409,35 @@ export default function App() {
 
           setPlaylistQueue(formattedItems.length > 0 ? formattedItems : [newTrack]);
           setPlaylistIndex(0);
+
+          // Si hay menos de 10 canciones, enriquecer en segundo plano con más canciones del artista / radio
+          if (formattedItems.length < 10 && newTrack.id) {
+            fetch(`/api/youtube/related?videoId=${newTrack.id}&artist=${encodeURIComponent(newTrack.artist || '')}&title=${encodeURIComponent(newTrack.title || '')}`)
+              .then(r => r.ok ? r.json() : null)
+              .then(relData => {
+                if (relData && relData.items && Array.isArray(relData.items) && relData.items.length > 0) {
+                  const freshTracks: Track[] = [];
+                  const currentIds = new Set(formattedItems.map(t => t.id));
+                  const currentKeys = new Set(formattedItems.map(t => normalizeSongKeyForDedup(t.title)).filter(Boolean));
+                  for (const it of relData.items) {
+                    if (!it || !it.id || currentIds.has(it.id)) continue;
+                    if (areSameSongClient(it.title, newTrack.title)) continue;
+                    const k = normalizeSongKeyForDedup(it.title);
+                    const pk = extractSongPartForDedup(it.title);
+                    if (k && currentKeys.has(k)) continue;
+                    if (pk && currentKeys.has(pk)) continue;
+                    currentIds.add(it.id);
+                    if (k) currentKeys.add(k);
+                    if (pk) currentKeys.add(pk);
+                    freshTracks.push(it);
+                  }
+                  if (freshTracks.length > 0) {
+                    setPlaylistQueue(prev => [...prev, ...freshTracks]);
+                  }
+                }
+              })
+              .catch(() => {});
+          }
         } else {
           setPlaylistQueue([newTrack]);
           setPlaylistIndex(0);
