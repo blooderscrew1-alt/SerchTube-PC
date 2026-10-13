@@ -607,7 +607,6 @@ export async function correctQueryWithGoogle(rawQuery: string): Promise<GoogleCo
 }
 
 /**
-/**
  * Realiza una búsqueda directa en Google.com (sección Videos: tbm=vid) con la frase
  * completa ingresada por el usuario SIN modificaciones ni correcciones artificiales.
  * Extrae los videos musicales de YouTube proporcionados directamente por Google.

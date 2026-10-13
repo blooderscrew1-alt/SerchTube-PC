@@ -229,10 +229,20 @@ app.get("/api/system/shutdown-status", (req, res) => {
 // Network IP detection endpoint: returns host interfaces and detected client IP
 app.get("/api/network/ip", (req, res) => {
   const interfaces = os.networkInterfaces();
-  const localIps: { interface: string; ip: string; isLan: boolean }[] = [];
+  const localIps: { interface: string; ip: string; isLan: boolean; isVirtual?: boolean }[] = [];
 
   for (const [name, ifaceList] of Object.entries(interfaces)) {
     if (!ifaceList) continue;
+    const lowerName = name.toLowerCase();
+    const isVirtual = lowerName.includes('virtual') ||
+      lowerName.includes('vbox') ||
+      lowerName.includes('vmnet') ||
+      lowerName.includes('wsl') ||
+      lowerName.includes('docker') ||
+      lowerName.includes('vethernet') ||
+      lowerName.includes('tap') ||
+      lowerName.includes('tun');
+
     for (const iface of ifaceList) {
       if (iface.family === 'IPv4' && !iface.internal) {
         const isLan =
@@ -242,7 +252,8 @@ app.get("/api/network/ip", (req, res) => {
         localIps.push({
           interface: name,
           ip: iface.address,
-          isLan
+          isLan,
+          isVirtual
         });
       }
     }
@@ -259,15 +270,28 @@ app.get("/api/network/ip", (req, res) => {
     clientIp = req.socket.remoteAddress.replace(/^.*:/, '');
   }
 
-  // Find best local candidate (192.168.x.x, 10.x.x.x, etc.)
-  const primaryLan = localIps.find(i => i.isLan)?.ip || localIps[0]?.ip || null;
+  // Priorizar interfaces físicas no virtuales (Wi-Fi, Ethernet, wlan, eth, etc.)
+  const physicalLan = localIps.find(i => i.isLan && !i.isVirtual)?.ip;
+  const anyLan = localIps.find(i => i.isLan)?.ip;
+  const primaryLan = physicalLan || anyLan || localIps[0]?.ip || null;
+
+  // Extraer el host usado en la petición actual
+  const requestHost = req.headers.host || '';
 
   res.json({
     localIps,
     primaryLan,
     clientIp: clientIp || null,
+    requestHost,
     port: PORT
   });
+});
+
+// ── Rutas de Redirección Automática para Mando Móvil Satélite por QR ───────
+app.get(["/remote", "/mando", "/satellite", "/control", "/qr"], (req, res) => {
+  const room = (req.query.room as string) || "serchtube-master";
+  console.log(`[Mando Remoto Móvil] 📱 Redirigiendo cliente móvil a interfaz de satélite (sala: ${room})`);
+  res.redirect(`/?role=satellite&room=${encodeURIComponent(room)}`);
 });
 
 // Voice Command Interpretation endpoint (Local High-Performance NLP)

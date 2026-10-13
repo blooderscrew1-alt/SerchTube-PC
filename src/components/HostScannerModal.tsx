@@ -62,9 +62,20 @@ export const HostScannerModal: React.FC<HostScannerModalProps> = ({
         onFound: (host) => {
           setFoundHost(host);
           setStatusMessage(`¡Host detectado en ${host.ip}:${host.port}! (${host.latencyMs}ms)`);
-          // Automatically re-link the WebSocket
+          // Automatically re-link the WebSocket and save
           nodeSync.setCustomHost(`${host.ip}:${host.port}`);
+          scanner.saveDiscoveredHost(host.url);
           onHostConnected?.(host);
+
+          // Si el origen del navegador difiere de la dirección del Host, redirigir automáticamente
+          if (window.location.origin !== host.url) {
+            setStatusMessage(`¡Host detectado en ${host.ip}:${host.port}! Redirigiendo página automáticamente...`);
+            setTimeout(() => {
+              const searchParams = new URLSearchParams(window.location.search);
+              searchParams.set('role', 'satellite');
+              window.location.replace(`${host.url}/?${searchParams.toString()}`);
+            }, 1200);
+          }
         }
       });
 

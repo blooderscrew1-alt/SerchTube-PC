@@ -432,7 +432,28 @@ export default function App() {
   const [qrCountdownDuration, setQrCountdownDuration] = useState<number>(10);
 
   // 4. Remote Node Synchronization State
-  const [nodeRole, setNodeRole] = useState<NodeRole>('master');
+  const [nodeRole, setNodeRole] = useState<NodeRole>(() => {
+    if (typeof window !== 'undefined') {
+      const pathname = window.location.pathname.toLowerCase();
+      const urlParams = new URLSearchParams(window.location.search);
+      const roleParam = urlParams.get('role');
+      if (
+        roleParam === 'satellite' ||
+        pathname.startsWith('/remote') ||
+        pathname.startsWith('/mando') ||
+        pathname.startsWith('/satellite') ||
+        pathname.startsWith('/control')
+      ) {
+        return 'satellite';
+      }
+      if (roleParam === 'master') return 'master';
+      try {
+        const saved = localStorage.getItem('serchtube_role') as NodeRole;
+        if (saved === 'satellite' || saved === 'master') return saved;
+      } catch (_) {}
+    }
+    return 'master';
+  });
   const nodeRoleRef = useRef<NodeRole>(nodeRole);
   nodeRoleRef.current = nodeRole;
   const [connectedNodesCount, setConnectedNodesCount] = useState<number>(1);
@@ -1096,18 +1117,22 @@ export default function App() {
 
   // Initialize Services on Mount
   useEffect(() => {
-    // Check URL parameters for fast role/room setup (e.g. ?room=xyz&role=satellite)
+    // Check URL parameters and pathname for fast role/room setup (e.g. ?room=xyz&role=satellite or /remote)
     const urlParams = new URLSearchParams(window.location.search);
-    const roomParam = urlParams.get('room');
+    const roomParam = urlParams.get('room') || 'serchtube-master';
     const roleParam = urlParams.get('role') as NodeRole;
+    const pathname = window.location.pathname.toLowerCase();
+    const isRemoteRoute =
+      pathname.startsWith('/remote') ||
+      pathname.startsWith('/mando') ||
+      pathname.startsWith('/satellite') ||
+      pathname.startsWith('/control');
 
     const nodeSync = NodeSyncService.getInstance();
-    if (roleParam === 'satellite' || roleParam === 'master') {
-      nodeSync.setRole(roleParam, undefined, roomParam || undefined);
-      setNodeRole(roleParam);
-    } else {
-      setNodeRole(nodeSync.getConfig().role);
-    }
+    const targetRole: NodeRole = (roleParam === 'satellite' || isRemoteRoute) ? 'satellite' : (roleParam === 'master' ? 'master' : nodeSync.getConfig().role);
+
+    nodeSync.setRole(targetRole, undefined, roomParam);
+    setNodeRole(targetRole);
 
     // Set NodeSync callbacks before connecting WebSocket
     nodeSync.setCallbacks({
@@ -1216,13 +1241,13 @@ export default function App() {
         setConnectedNodesCount(count);
 
         if (!connected && nodeRoleRef.current === 'satellite') {
-          // If disconnected for more than 5 seconds, attempt background probe / auto-discover
+          // Si el satélite está desconectado por más de 3 segundos, buscar el Host en la red local
           if (disconnectProbeTimerRef.current) clearTimeout(disconnectProbeTimerRef.current);
           disconnectProbeTimerRef.current = setTimeout(async () => {
             const scanner = HostScannerService.getInstance();
             if (scanner.isScanActive()) return;
 
-            // Probe current host first
+            // Probar el host actual primero
             const activeHost = NodeSyncService.getInstance().getActiveHost();
             const hostIp = activeHost.split(':')[0];
             const port = parseInt(activeHost.split(':')[1], 10) || 3000;
@@ -1233,12 +1258,24 @@ export default function App() {
                 port,
                 onFound: (found) => {
                   console.log('[Satellite Auto-Reconnect] ⚡ ¡Nuevo Host encontrado en:', found.url);
+                  scanner.saveDiscoveredHost(found.url);
                   NodeSyncService.getInstance().setCustomHost(`${found.ip}:${found.port}`);
-                  setAssistantResponse(`¡Reconectado con el coche en ${found.ip}:${found.port}!`);
+
+                  // Si el Host encontrado tiene una IP u origen diferente al actual del navegador,
+                  // redirigir la página del teléfono al nuevo origen para garantizar conectividad total:
+                  if (window.location.origin !== found.url) {
+                    const searchParams = new URLSearchParams(window.location.search);
+                    searchParams.set('role', 'satellite');
+                    searchParams.set('room', roomParam);
+                    console.log(`[Satellite Auto-Reconnect] 🔄 Redirigiendo navegador móvil a ${found.url}/?${searchParams.toString()}`);
+                    window.location.replace(`${found.url}/?${searchParams.toString()}`);
+                  } else {
+                    setAssistantResponse(`¡Reconectado con el coche en ${found.ip}:${found.port}!`);
+                  }
                 }
               });
             }
-          }, 5000);
+          }, 3500);
         } else if (connected) {
           if (disconnectProbeTimerRef.current) {
             clearTimeout(disconnectProbeTimerRef.current);

@@ -217,12 +217,12 @@ const ScreensaverOverlayComponent: React.FC<ScreensaverOverlayProps> = ({
         window.location.hostname === '0.0.0.0');
 
     if (!isLocalhost && typeof window !== 'undefined') {
-      return `${window.location.origin}/?room=${encodeURIComponent(activeRoom)}&role=satellite`;
+      return `${window.location.origin}/remote?room=${encodeURIComponent(activeRoom)}`;
     }
 
     const bestIp = localIp || detectedIp || '192.168.1.100';
     const port = (typeof window !== 'undefined' && window.location.port) ? window.location.port : '3000';
-    return `http://${bestIp}:${port}/?room=${encodeURIComponent(activeRoom)}&role=satellite`;
+    return `http://${bestIp}:${port}/remote?room=${encodeURIComponent(activeRoom)}`;
   }, [localIp, detectedIp]);
 
   // Resizable and repositionable music resume bar state (saved in localStorage)
