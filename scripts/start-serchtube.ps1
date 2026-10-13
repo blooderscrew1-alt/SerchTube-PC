@@ -71,6 +71,14 @@ param(
   [switch]$SinAutoInicio,
   [switch]$QuitarAutoInicio,
 
+  # Solo registra el autoinicio de Windows y sale (lo usa el interruptor
+  # "Iniciar con Windows" de los Ajustes de la app via /api/system/auto-start)
+  [switch]$SoloRegistrarAutoInicio,
+
+  # Imprime en una sola linea si el autoinicio esta o no registrado
+  # (lo usa /api/system/auto-start-status para leer el estado real)
+  [switch]$MostrarEstadoAutoInicio,
+
   # Lo pone el guion silencioso cuando Windows lo lanza al iniciar sesion
   [switch]$AutoInicio,
 
@@ -444,6 +452,29 @@ if (-not $TengoElTurno) {
 }
 
 try {
+  # ---------------------------------- 0.5) Estado / registro rapido de autoinicio
+  if ($MostrarEstadoAutoInicio) {
+    # Modo lectura: no arranca nada, solo informa (para el interruptor de Ajustes)
+    $lnk = Get-RutaAccesoInicio
+    $porAcceso = Test-Path -LiteralPath $lnk
+    $porRegistro = $false
+    try {
+      if (Get-ItemProperty -Path $ClaveRun -Name $NombreAutoInicio -ErrorAction Stop) { $porRegistro = $true }
+    } catch { }
+    if ($porAcceso -or $porRegistro) { Write-Output 'AUTOINICIO=ACTIVADO' } else { Write-Output 'AUTOINICIO=DESACTIVADO' }
+    exit 0
+  }
+
+  if ($SoloRegistrarAutoInicio) {
+    # Modo escritura rapida desde la app: solo registra y sale (sin abrir navegador)
+    if (Registrar-AutoInicio) {
+      Write-Paso "Autoinicio registrado correctamente."
+    } else {
+      Write-Paso "El autoinicio ya estaba registrado."
+    }
+    exit 0
+  }
+
   # ------------------------------------------------- 1) Reparar perfil y salir
   if ($RepararPerfil) {
     if (-not $UsarPerfilDedicado) {
@@ -464,6 +495,11 @@ try {
 
   # ------------------------------------------------- 2) Quitar autoinicio y salir
   if ($QuitarAutoInicio) {
+    # Se asegura de que el arranque silencioso exista (por si se borro) para que
+    # el registro sea coherente, y luego elimina acceso directo + clave Run
+    if (-not (Test-Path -LiteralPath $VbsSilencioso)) {
+      Set-Content -LiteralPath $VbsSilencioso -Value $GuionVbs -Encoding ASCII
+    }
     if (Quitar-AutoInicio) {
       Write-Paso "Autoinicio de Windows eliminado: SerchTube ya no se abrira solo al encender la PC."
     } else {

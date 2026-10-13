@@ -217,6 +217,78 @@ app.post("/api/system/cancel-shutdown", (req, res) => {
   });
 });
 
+// ─── Autoinicio de Windows ("Iniciar con Windows") ───────────────────────────
+// El interruptor de Ajustes delega en el launcher oficial del proyecto
+// (scripts/start-serchtube.ps1), que ya sabe registrar/quitar/consultar el
+// acceso directo de la carpeta Inicio sin necesidad de Git ni permisos de admin.
+const SERCHTUBE_AUTOINICIO_NOMBRE = "SerchTube Music";
+
+function getStartupPs1Path(): string {
+  // En desarrollo: raiz del proyecto. En build: dist/server.cjs -> un nivel arriba.
+  const baseDir = __dirname.endsWith("dist") ? path.join(__dirname, "..") : __dirname;
+  return path.join(baseDir, "scripts", "start-serchtube.ps1");
+}
+
+function runStartupPowerShell(args: string[], timeoutMs: number): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const ps1 = getStartupPs1Path();
+    if (!fs.existsSync(ps1)) {
+      rejectPromise(new Error("No se encontro scripts/start-serchtube.ps1 en esta instalacion"));
+      return;
+    }
+    const cmd = `powershell.exe -NoProfile -ExecutionPolicy Bypass -File "${ps1}" ${args.join(" ")}`;
+    exec(cmd, { windowsHide: true, timeout: timeoutMs }, (err, stdout, stderr) => {
+      if (err && typeof (err as any).killed !== "undefined" && (err as any).killed) {
+        rejectPromise(new Error("El comando tardo demasiado y fue cancelado"));
+        return;
+      }
+      resolvePromise({ code: err ? (typeof err.code === "number" ? err.code : 1) : 0, stdout: String(stdout || ""), stderr: String(stderr || "") });
+    });
+  });
+}
+
+app.get("/api/system/auto-start-status", (_req, res) => {
+  if (process.platform !== "win32") {
+    return res.json({ supported: false, enabled: false, platform: process.platform });
+  }
+  // Fuente de verdad: el propio launcher, que revisa acceso directo + clave Run
+  runStartupPowerShell(["-MostrarEstadoAutoInicio"], 15000)
+    .then((result) => {
+      const enabled = /AUTOINICIO=ACTIVADO/.test(result.stdout);
+      res.json({ supported: true, enabled, platform: process.platform });
+    })
+    .catch((err) => {
+      // Respaldo por si el ps1 no esta disponible: comprobacion directa
+      try {
+        const startupLnk = path.join(os.homedir(), "AppData", "Roaming", "Microsoft", "Windows", "Start Menu", "Programs", "Startup", `${SERCHTUBE_AUTOINICIO_NOMBRE}.lnk`);
+        res.json({ supported: true, enabled: fs.existsSync(startupLnk), fallback: true, error: String(err?.message || err) });
+      } catch (err2: any) {
+        res.status(500).json({ supported: true, enabled: false, error: String(err2?.message || err2) });
+      }
+    });
+});
+
+app.post("/api/system/auto-start", async (req, res) => {
+  const enable = req.body?.enable !== false;
+  if (process.platform !== "win32") {
+    return res.status(400).json({ success: false, message: "El autoinicio solo esta disponible en Windows" });
+  }
+  try {
+    const args = enable ? ["-SoloRegistrarAutoInicio"] : ["-QuitarAutoInicio"];
+    const result = await runStartupPowerShell(args, enable ? 30000 : 15000);
+    res.json({
+      success: result.code === 0,
+      enabled: enable,
+      message: result.code === 0
+        ? (enable ? "SerchTube se abrira solo al encender la PC." : "SerchTube ya no se abrira al encender la PC.")
+        : `El lanzador termino con codigo ${result.code}. Revisa logs\\servidor.log`,
+      stdout: result.stdout.slice(-800)
+    });
+  } catch (err: any) {
+    res.status(500).json({ success: false, message: String(err?.message || err) });
+  }
+});
+
 // System Shutdown Status endpoint
 app.get("/api/system/shutdown-status", (req, res) => {
   res.json({

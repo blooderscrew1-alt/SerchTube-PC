@@ -71,7 +71,8 @@ import {
   AlertTriangle,
   QrCode,
   Copy,
-  FileCode
+  FileCode,
+  Rocket
 } from 'lucide-react';
 
 interface SettingsModalProps {
@@ -569,6 +570,51 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
   const [isTestingMic, setIsTestingMic] = useState<boolean>(false);
   const [micTestVolume, setMicTestVolume] = useState<number>(0);
   const [micPermissionGranted, setMicPermissionGranted] = useState<boolean>(false);
+
+  // ─── "Iniciar con Windows" (autoinicio al encender la PC) ───
+  const [autoStartEnabled, setAutoStartEnabled] = useState<boolean>(false);
+  const [autoStartSupported, setAutoStartSupported] = useState<boolean>(true);
+  const [autoStartLoading, setAutoStartLoading] = useState<boolean>(false);
+  const [autoStartMessage, setAutoStartMessage] = useState<string>('');
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/system/auto-start-status')
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(String(r.status))))
+      .then(d => {
+        if (cancelled) return;
+        setAutoStartSupported(d.supported !== false);
+        setAutoStartEnabled(!!d.enabled);
+      })
+      .catch(() => { /* servidor no expone el endpoint (p.ej. dev sin server.ts): ocultar seccion */
+        if (!cancelled) setAutoStartSupported(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
+  const handleToggleAutoStart = async () => {
+    if (autoStartLoading) return;
+    const next = !autoStartEnabled;
+    setAutoStartLoading(true);
+    setAutoStartMessage('');
+    try {
+      const res = await fetch('/api/system/auto-start', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enable: next })
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setAutoStartEnabled(next);
+        setAutoStartMessage(data.message || (next ? 'Activado: SerchTube arrancara con Windows.' : 'Desactivado.'));
+      } else {
+        setAutoStartMessage(data.message || 'No se pudo cambiar el autoinicio.');
+      }
+    } catch {
+      setAutoStartMessage('No se pudo contactar con el servidor local. Prueba con los .bat de la carpeta.');
+    } finally {
+      setAutoStartLoading(false);
+      setTimeout(() => setAutoStartMessage(''), 6000);
+    }
+  };
   const micTestStreamRef = React.useRef<MediaStream | null>(null);
   const micAudioCtxRef = React.useRef<AudioContext | null>(null);
   const micAnimFrameRef = React.useRef<number | null>(null);
@@ -2389,6 +2435,62 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
               </button>
             </div>
           </CollapsibleSection>
+
+          {/* Seccion: Iniciar con Windows (autoinicio al encender la PC) */}
+          {autoStartSupported && (
+            <CollapsibleSection
+              id="windows_autostart"
+              title="Iniciar con Windows"
+              icon={<Rocket size={16} />}
+              summary={
+                autoStartEnabled
+                  ? 'SerchTube se abre solo al encender la PC (servidor + ventana, sin consolas)'
+                  : 'SerchTube NO se abre al encender la PC (inicialo con "Iniciar SerchTube.bat")'
+              }
+              badge={
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold border ${
+                  autoStartEnabled
+                    ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                    : 'bg-white/10 text-gray-400 border-white/10'
+                }`}>
+                  {autoStartEnabled ? 'AUTO' : 'MANUAL'}
+                </span>
+              }
+              isExpanded={!!expandedSections['windows_autostart']}
+              onToggle={() => toggleSection('windows_autostart')}
+            >
+              <div className="flex items-center justify-between">
+                <div className="pr-4">
+                  <div className="text-sm font-semibold text-white">Arrancar automaticamente al encender el PC</div>
+                  <div className="text-xs text-gray-400">
+                    Registra SerchTube en el inicio de Windows (carpeta Inicio del usuario, sin permisos de
+                    administrador). Al encender la PC se levanta el servidor y se abre la app en silencio tras
+                    unos segundos. Desactivalo aqui o con "Quitar autoinicio de SerchTube.bat".
+                  </div>
+                  {autoStartMessage && (
+                    <div className={`text-xs mt-2 font-mono ${autoStartMessage.startsWith('No') ? 'text-amber-400' : 'text-emerald-400'}`}>
+                      {autoStartMessage}
+                    </div>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleToggleAutoStart}
+                  disabled={autoStartLoading}
+                  className={`w-12 h-6 rounded-full transition-colors relative cursor-pointer shrink-0 ${
+                    autoStartEnabled ? 'bg-emerald-600' : 'bg-white/10'
+                  } ${autoStartLoading ? 'opacity-50 cursor-wait' : ''}`}
+                  title={autoStartEnabled ? 'Desactivar inicio automatico' : 'Activar inicio automatico'}
+                >
+                  <div
+                    className={`w-4 h-4 rounded-full bg-white absolute top-1 transition-transform ${
+                      autoStartEnabled ? 'right-1' : 'left-1'
+                    }`}
+                  />
+                </button>
+              </div>
+            </CollapsibleSection>
+          )}
 
           {/* Section 3.2: Equalizer Master Switch & Hardware Audio Processing */}
           <CollapsibleSection
