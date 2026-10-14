@@ -25,6 +25,7 @@ import {
   getMsUntilTargetTime
 } from '../services/autoShutdownService';
 import { SpeechConfig, SpeechService } from '../services/speechService';
+import { AudioEngine } from '../services/audioEngine';
 import { NEURAL_VOICES, NEURAL_VOICE_GROUPS, DEFAULT_NEURAL_VOICE, isNeuralTtsSupported, getNeuralProvider, subscribeNeuralProvider } from '../services/neuralTts';
 import { VIDEO_QUALITY_OPTIONS, PLAYBACK_SPEED_OPTIONS, getQualityOption } from '../utils/quality';
 import { extractYouTubeId, getYouTubeWatchUrl, getYouTubeThumbnail } from '../utils/youtube';
@@ -1636,6 +1637,57 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
                     <li><code className="text-white">&ldquo;{speechConfig.wakeWord || 'música'}, siguiente canción&rdquo;</code> (Control de reproductor)</li>
                     <li><code className="text-white">&ldquo;{speechConfig.wakeWord || 'música'}&rdquo;</code> (El asistente atenuará la música y escuchará tu orden durante 5 segundos)</li>
                   </ul>
+                </div>
+
+                {/* Section: Sonido de Activación de Micrófono (Alternativas y Favorito) */}
+                <div className="space-y-2 pt-2 border-t border-white/10">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs text-gray-300 font-medium flex items-center gap-2">
+                      <span>Sonido de Activación de Micrófono (Favorito):</span>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-red-500/20 text-red-400 font-mono border border-red-500/30 font-bold">
+                        {speechConfig.wakeSound || 'random'}
+                      </span>
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => AudioEngine.getInstance().playWakeSound(speechConfig.wakeSound || 'random')}
+                      className="px-2.5 py-1 rounded-lg text-xs font-medium bg-white/10 hover:bg-white/20 text-white transition-all cursor-pointer flex items-center gap-1.5 border border-white/15"
+                    >
+                      <span>🔊 Probar sonido</span>
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {[
+                      { id: 'random', label: '🎲 Aleatorio' },
+                      { id: 'sub_bass', label: '🔊 Sub Bass' },
+                      { id: 'notification', label: '🔔 Táctico' },
+                      { id: 'cyberpunk', label: '⚡ Cyberpunk' },
+                      { id: 'sonar', label: '📡 Sonar' },
+                      { id: 'chime', label: '✨ Cristal' },
+                      { id: 'futuristic', label: '🚀 Sci-Fi' },
+                      { id: 'none', label: '🔇 Silencioso' }
+                    ].map((sOpt) => {
+                      const currentWakeSound = speechConfig.wakeSound || 'random';
+                      const isSelected = currentWakeSound === sOpt.id;
+                      return (
+                        <button
+                          key={sOpt.id}
+                          type="button"
+                          onClick={() => {
+                            onUpdateSpeechConfig({ wakeSound: sOpt.id });
+                            AudioEngine.getInstance().playWakeSound(sOpt.id);
+                          }}
+                          className={`p-2 rounded-xl text-left border transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-red-600 text-white border-red-500 font-bold shadow-[0_0_12px_rgba(220,38,38,0.5)]'
+                              : 'bg-black/60 border-white/10 text-gray-300 hover:text-white hover:bg-white/10'
+                          }`}
+                        >
+                          <div className="text-xs font-semibold">{sOpt.label}</div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
 
                 {/* Section: Enfoque de Micrófono Local y Ganancia Automática (AGC + AEC) */}

@@ -361,24 +361,93 @@ export class AudioEngine {
    * Reproduce un sonido corto estilo notificación (sub bass o ringtone SMS)
    * en lugar de decir una frase de saludo al detectar la palabra clave.
    */
-  public playWakeSound() {
+  public playWakeSound(preference: string = 'random') {
     try {
-      const sounds = this.getWakeSounds();
-      const sound = sounds[Math.floor(Math.random() * sounds.length)];
-      if (!sound) return;
-      // Reiniciar y reproducir al instante (permite solaparse si se reactiva rápido)
-      sound.currentTime = 0;
-      const playPromise = sound.play();
-      if (playPromise && typeof playPromise.catch === 'function') {
-        playPromise.catch(err => {
-          console.warn("AudioEngine playWakeSound error:", err);
-          // Reintentar tras reactivar el contexto de audio (política de autoplay)
-          this.resume();
-          sound.play().catch(() => {});
-        });
+      if (preference === 'none') return;
+      if (preference === 'sub_bass') {
+        const sounds = this.getWakeSounds();
+        if (sounds[0]) {
+          sounds[0].currentTime = 0;
+          sounds[0].play().catch(() => this.resume());
+        }
+        return;
+      }
+      if (preference === 'notification') {
+        const sounds = this.getWakeSounds();
+        if (sounds[1]) {
+          sounds[1].currentTime = 0;
+          sounds[1].play().catch(() => this.resume());
+        }
+        return;
+      }
+      if (preference === 'cyberpunk' || preference === 'sonar' || preference === 'chime' || preference === 'futuristic') {
+        this.playSynthesizedWakeSound(preference);
+        return;
+      }
+      // 'random' or default
+      const allOptions = ['sub_bass', 'notification', 'cyberpunk', 'sonar', 'chime', 'futuristic'];
+      const chosen = allOptions[Math.floor(Math.random() * allOptions.length)];
+      if (chosen === 'sub_bass') {
+        const sounds = this.getWakeSounds();
+        if (sounds[0]) { sounds[0].currentTime = 0; sounds[0].play().catch(() => this.resume()); }
+      } else if (chosen === 'notification') {
+        const sounds = this.getWakeSounds();
+        if (sounds[1]) { sounds[1].currentTime = 0; sounds[1].play().catch(() => this.resume()); }
+      } else {
+        this.playSynthesizedWakeSound(chosen);
       }
     } catch (e) {
       console.warn("AudioEngine playWakeSound error:", e);
+    }
+  }
+
+  private playSynthesizedWakeSound(type: string) {
+    try {
+      this.init();
+      if (!this.audioCtx) return;
+      const now = this.audioCtx.currentTime;
+      const osc = this.audioCtx.createOscillator();
+      const gain = this.audioCtx.createGain();
+
+      if (type === 'cyberpunk') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.exponentialRampToValueAtTime(880, now + 0.15);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.2);
+        osc.start(now);
+        osc.stop(now + 0.22);
+      } else if (type === 'sonar') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(900, now);
+        osc.frequency.exponentialRampToValueAtTime(600, now + 0.3);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.35);
+        osc.start(now);
+        osc.stop(now + 0.38);
+      } else if (type === 'chime') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(523.25, now);
+        osc.frequency.setValueAtTime(659.25, now + 0.1);
+        gain.gain.setValueAtTime(0.18, now);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.4);
+        osc.start(now);
+        osc.stop(now + 0.42);
+      } else {
+        // futuristic
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.exponentialRampToValueAtTime(1200, now + 0.2);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.25);
+        osc.start(now);
+        osc.stop(now + 0.28);
+      }
+
+      osc.connect(gain);
+      gain.connect(this.bassFilter ? this.bassFilter : this.audioCtx.destination);
+    } catch (e) {
+      console.warn("playSynthesizedWakeSound error:", e);
     }
   }
 }

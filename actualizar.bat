@@ -17,13 +17,20 @@ echo   SerchTube Music - Actualizando desde GitHub...
 echo ============================================================================
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\update-serchtube.ps1" %*
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& '%~dp0scripts\update-serchtube.ps1' %*"
 set PS_EXIT=%ERRORLEVEL%
 
 if %PS_EXIT% NEQ 0 (
     echo.
-    echo [ERROR] La actualizacion finalizo con advertencias o codigo %PS_EXIT%.
-    echo Si necesitas ayuda, revisa la carpeta logs\
+    echo ============================================================================
+    echo  [AVISO] No se pudo completar la actualizacion automatica.
+    echo.
+    echo  Si tu repositorio en GitHub es PRIVADO o tiene otro usuario:
+    echo    1. Puedes ingresar tu token de GitHub cuando se solicite.
+    echo    2. O agregar en tu archivo .env:
+    echo       GITHUB_REPO=https://github.com/tu-usuario/tu-repo
+    echo       GITHUB_TOKEN=tu_token_aqui
+    echo ============================================================================
     echo.
     pause
 ) else (

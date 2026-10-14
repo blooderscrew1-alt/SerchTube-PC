@@ -1388,7 +1388,7 @@ export default function App() {
           const nowBeep = Date.now();
           if (nowBeep - lastWakeBeepTimeRef.current > 1500) {
             lastWakeBeepTimeRef.current = nowBeep;
-            AudioEngine.getInstance().playWakeSound();
+            AudioEngine.getInstance().playWakeSound(speechConfig.wakeSound || 'random');
           }
         }
 
@@ -1537,7 +1537,7 @@ export default function App() {
               const nowBeep = Date.now();
               if (nowBeep - lastWakeBeepTimeRef.current > 1500) {
                 lastWakeBeepTimeRef.current = nowBeep;
-                AudioEngine.getInstance().playWakeSound();
+                AudioEngine.getInstance().playWakeSound(speechConfig.wakeSound || 'random');
               }
 
               // Cancelar cualquier saludo por voz para garantizar CERO respuestas por voz TTS

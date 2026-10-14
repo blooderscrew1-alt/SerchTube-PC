@@ -63,6 +63,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Forzar TLS 1.2 y 1.3 en PowerShell para evitar fallos de conexión segura con GitHub
+try {
+  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls13
+} catch {
+  try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
+}
+
 $Raiz = Split-Path -Parent $PSScriptRoot
 $LogDir = Join-Path $Raiz 'logs'
 $NombreLog = 'actualizar.log'
@@ -76,6 +84,33 @@ function Write-Registro([string]$m) {
     Add-Content -LiteralPath (Join-Path $LogDir $NombreLog) -Value ("[{0}] {1}" -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $m)
   } catch { }
 }
+
+function Save-EnvVar([string]$key, [string]$val) {
+  try {
+    $ruta = Join-Path $Raiz '.env'
+    $lineas = @()
+    if (Test-Path -LiteralPath $ruta) {
+      $lineas = @(Get-Content -LiteralPath $ruta)
+    }
+    $encontrado = $false
+    $nuevas = @()
+    foreach ($lin in $lineas) {
+      if ($lin -match "^\s*(?:export\s+)?$key\s*=") {
+        $nuevas += "$key=`"$val`""
+        $encontrado = $true
+      } else {
+        $nuevas += $lin
+      }
+    }
+    if (-not $encontrado) {
+      $nuevas += "$key=`"$val`""
+    }
+    Set-Content -LiteralPath $ruta -Value $nuevas -Encoding UTF8
+  } catch {
+    Write-Aviso "No se pudo guardar $key en el archivo .env: $($_.Exception.Message)"
+  }
+}
+
 function Test-Comando([string]$nombre) { return [bool](Get-Command $nombre -ErrorAction SilentlyContinue) }
 function Get-ServidorPid {
   try {
@@ -252,24 +287,107 @@ $limpio = $Repo -replace '\.git$', '' -replace '^https?://github\.com/', ''
 $partes = $limpio -split '/'
 if ($partes.Count -lt 2) { Write-Mal "No pude interpretar el repositorio: $Repo"; exit 1 }
 $owner = $partes[0]; $nombreRepo = $partes[1]
-$zipUrl = "https://codeload.github.com/$owner/$nombreRepo/zip/refs/heads/$Rama"
+
+function Download-GitHubZip {
+  param(
+    [string]$Owner,
+    [string]$RepoName,
+    [string]$Branch,
+    [string]$AuthToken,
+    [string]$OutZip
+  )
+
+  $branches = @($Branch)
+  if ($Branch -eq 'main') { $branches += 'master' }
+  elseif ($Branch -eq 'master') { $branches += 'main' }
+
+  if (Test-Path -LiteralPath $OutZip) {
+    Remove-Item -Force -LiteralPath $OutZip -ErrorAction SilentlyContinue
+  }
+
+  foreach ($b in $branches) {
+    # 1. API oficial de GitHub zipball (método oficial y único que descarga repositorios privados con Token)
+    $apiHeaders = @{
+      'User-Agent' = 'SerchTube-Updater'
+      'Accept'     = 'application/vnd.github+json'
+    }
+    if ($AuthToken) {
+      $apiHeaders['Authorization'] = "Bearer $AuthToken"
+    }
+
+    $apiUrl = "https://api.github.com/repos/$Owner/$RepoName/zipball/$b"
+    try {
+      Write-Paso "Probando descarga desde API de GitHub (rama $b)..."
+      Invoke-WebRequest -Uri $apiUrl -OutFile $OutZip -UseBasicParsing -TimeoutSec 180 -Headers $apiHeaders
+      if ((Test-Path -LiteralPath $OutZip) -and ((Get-Item -LiteralPath $OutZip).Length -gt 500)) {
+        return @{ Success = $true; Branch = $b; Method = 'api' }
+      }
+    } catch {
+      Write-Registro "API zipball ($b) no disponible: $($_.Exception.Message)"
+    }
+
+    # 2. Codeload directo de GitHub (método para repositorios públicos)
+    $codeloadUrl = "https://codeload.github.com/$Owner/$RepoName/zip/refs/heads/$b"
+    try {
+      Write-Paso "Probando descarga directa de codeload (rama $b)..."
+      $clHeaders = @{ 'User-Agent' = 'SerchTube-Updater' }
+      if ($AuthToken) { $clHeaders['Authorization'] = "Bearer $AuthToken" }
+      Invoke-WebRequest -Uri $codeloadUrl -OutFile $OutZip -UseBasicParsing -TimeoutSec 180 -Headers $clHeaders
+      if ((Test-Path -LiteralPath $OutZip) -and ((Get-Item -LiteralPath $OutZip).Length -gt 500)) {
+        return @{ Success = $true; Branch = $b; Method = 'codeload' }
+      }
+    } catch {
+      Write-Registro "Codeload ($b) no disponible: $($_.Exception.Message)"
+    }
+
+    # 3. Archive directo de GitHub
+    $archiveUrl = "https://github.com/$Owner/$RepoName/archive/refs/heads/$b.zip"
+    try {
+      Write-Paso "Probando descarga desde archive (rama $b)..."
+      Invoke-WebRequest -Uri $archiveUrl -OutFile $OutZip -UseBasicParsing -TimeoutSec 180 -Headers @{ 'User-Agent' = 'SerchTube-Updater' }
+      if ((Test-Path -LiteralPath $OutZip) -and ((Get-Item -LiteralPath $OutZip).Length -gt 500)) {
+        return @{ Success = $true; Branch = $b; Method = 'archive' }
+      }
+    } catch {
+      Write-Registro "Archive ($b) no disponible: $($_.Exception.Message)"
+    }
+  }
+
+  return @{ Success = $false }
+}
 
 $cabeceras = @{ 'User-Agent' = 'SerchTube-Updater' }
 if ($Token) {
   $cabeceras['Authorization'] = "Bearer $Token"
-  Write-Paso "Usando token de GitHub (repositorio privado)."
+  Write-Paso "Usando token de GitHub (acceso autenticado a repositorio privado)."
 } else {
-  Write-Paso "Sin token: se probara como repositorio publico. Si es privado, anade GITHUB_TOKEN=tu_token al archivo .env."
+  Write-Paso "Sin token configurado: se intentara como repositorio publico."
 }
 
 Write-Paso "Buscando actualizaciones de '$owner/$nombreRepo' (rama $Rama)..."
 $shaRemoto = ''
 try {
   $infoApi = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$nombreRepo/commits/$Rama" `
-    -Headers $cabeceras -TimeoutSec 30
+    -Headers $cabeceras -TimeoutSec 20
   $shaRemoto = $infoApi.sha
   $despuesTitulo = $infoApi.commit.message.Split("`n")[0]
-} catch { Write-Aviso "No se pudo consultar la API de GitHub; se comprueba bajando el ZIP." }
+} catch {
+  # Si falla con la rama main, comprobar si la rama es master
+  if ($Rama -eq 'main') {
+    try {
+      $infoApi = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$nombreRepo/commits/master" `
+        -Headers $cabeceras -TimeoutSec 20
+      $shaRemoto = $infoApi.sha
+      $despuesTitulo = $infoApi.commit.message.Split("`n")[0]
+      $Rama = 'master'
+      Write-Paso "Detectada rama principal 'master' en GitHub."
+    } catch {
+      Write-Aviso "No se pudo consultar la API de GitHub; se procede descargando el archivo ZIP."
+    }
+  } else {
+    Write-Aviso "No se pudo consultar la API de GitHub; se procede descargando el archivo ZIP."
+  }
+}
 
 # Version "publicada localmente": solo sabemos que tenemos la ultima si YA bajo
 # ese mismo commit (archivo .version-remota.txt). Con '-Forzar' se baja siempre.
@@ -290,26 +408,96 @@ if ($shaRemoto -and $versionLocal -and ($shaRemoto -eq $versionLocal)) {
   if ($esRepo) { Write-Aviso "Esta copia es un repo git, pero se actualiza por ZIP para no depender de Git." }
   else { Write-Paso "Se actualiza bajando el ZIP de GitHub (una sola descarga, no hace falta Git)." }
 
-  # $env:TEMP solo existe en Windows; si no, usar el directorio temporal de PowerShell
   $dirTmp = if ($env:TEMP) { $env:TEMP } else { [System.IO.Path]::GetTempPath() }
   $temp = Join-Path $dirTmp ("serchtube-update-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
   New-Item -ItemType Directory -Force -Path $temp | Out-Null
   try {
     $zip = Join-Path $temp 'repo.zip'
-    Write-Paso "Descargando $zipUrl"
-    # El token se pasa por cabecera Authorization (soportado por codeload);
-    # nunca por la URL para no dejar el token en el historial/log.
-    $descCabeceras = @{ 'User-Agent' = 'SerchTube-Updater' }
-    if ($Token) { $descCabeceras['Authorization'] = "Bearer $Token" }
-    try {
-      Invoke-WebRequest -Uri $zipUrl -OutFile $zip -UseBasicParsing -TimeoutSec 180 -Headers $descCabeceras
-    } catch {
-      # Si fallo con token, se reintenta sin token (por si el repo es publico)
-      if ($Token) {
-        Write-Aviso "La descarga con token fallo; reintentando sin token..."
-        Invoke-WebRequest -Uri $zipUrl -OutFile $zip -UseBasicParsing -TimeoutSec 180 -Headers @{ 'User-Agent' = 'SerchTube-Updater' }
-      } else { throw }
+    
+    # Intentar descargar el ZIP con el método multi-rama y multi-endpoint
+    $descarga = Download-GitHubZip -Owner $owner -RepoName $nombreRepo -Branch $Rama -AuthToken $Token -OutZip $zip
+
+    # Si la descarga falló (ej: Error 404 porque el repo es privado y no hay token o la URL es distinta)
+    if (-not $descarga.Success) {
+      Write-Host ""
+      Write-Host "============================================================================" -ForegroundColor Yellow
+      Write-Host "  NO SE PUDO DESCARGAR LA ACTUALIZACION DE GITHUB (Error 404 / No encontrado)" -ForegroundColor Yellow
+      Write-Host "============================================================================" -ForegroundColor Yellow
+      Write-Host "Repositorio configurado: https://github.com/$owner/$nombreRepo" -ForegroundColor White
+      Write-Host ""
+      Write-Host "Causas mas frecuentes:" -ForegroundColor Cyan
+      Write-Host " 1. Tu repositorio es PRIVADO en GitHub: GitHub oculta los repos privados con 404" -ForegroundColor Gray
+      Write-Host "    a menos que uses un Token personal de GitHub (gratuito)." -ForegroundColor Gray
+      Write-Host " 2. El nombre o usuario del repositorio en GitHub no coincide exactamente." -ForegroundColor Gray
+      Write-Host ""
+
+      $reintentar = $true
+      while ($reintentar) {
+        Write-Host "Opciones para solucionar esto:" -ForegroundColor Cyan
+        Write-Host " [1] Introducir tu GitHub Token (Recomendado si tu repositorio es Privado)" -ForegroundColor White
+        Write-Host " [2] Cambiar la direccion del repositorio de GitHub (si el nombre es distinto)" -ForegroundColor White
+        Write-Host " [3] Cancelar y salir" -ForegroundColor White
+        Write-Host ""
+        $opc = Read-Host "Elige una opcion (1, 2 o 3)"
+
+        if ($opc -eq '1') {
+          Write-Host ""
+          Write-Host "Como obtener tu Token gratuito de GitHub en 30 segundos:" -ForegroundColor Cyan
+          Write-Host " 1. Entra en tu navegador a: https://github.com/settings/tokens" -ForegroundColor White
+          Write-Host " 2. Pulsa en 'Generate new token' -> 'Generate new token (classic)'." -ForegroundColor White
+          Write-Host " 3. Pon una descripcion (ej: SerchTube) y marca la casilla 'repo'." -ForegroundColor White
+          Write-Host " 4. Pulsa el boton verde 'Generate token' abajo del todo." -ForegroundColor White
+          Write-Host " 5. Copia el token que empieza con 'ghp_...'" -ForegroundColor White
+          Write-Host ""
+          $inputToken = Read-Host "Pega tu GitHub Token aqui (se guardara automaticamente en tu .env)"
+          if ($inputToken -and $inputToken.Trim().Length -gt 5) {
+            $Token = $inputToken.Trim().Trim('"').Trim("'")
+            Save-EnvVar -key 'GITHUB_TOKEN' -val $Token
+            Write-Paso "Token guardado en tu archivo .env correctamente."
+            Write-Paso "Reintentando descarga con tu nuevo Token..."
+            $descarga = Download-GitHubZip -Owner $owner -RepoName $nombreRepo -Branch $Rama -AuthToken $Token -OutZip $zip
+            if ($descarga.Success) {
+              $reintentar = $false
+              break
+            } else {
+              Write-Mal "El token ingresado no tiene acceso a 'https://github.com/$owner/$nombreRepo' o el repositorio no existe."
+            }
+          } else {
+            Write-Aviso "No se introdujo ningun token."
+          }
+        } elseif ($opc -eq '2') {
+          Write-Host ""
+          $inputRepo = Read-Host "Introduce la URL o usuario/repo de tu repositorio en GitHub"
+          if ($inputRepo -and $inputRepo.Trim().Length -gt 5) {
+            $Repo = $inputRepo.Trim().Trim('"').Trim("'")
+            Save-EnvVar -key 'GITHUB_REPO' -val $Repo
+            $limpio = $Repo -replace '\.git$', '' -replace '^https?://github\.com/', ''
+            $partes = $limpio -split '/'
+            if ($partes.Count -ge 2) {
+              $owner = $partes[0]; $nombreRepo = $partes[1]
+              Write-Paso "Repositorio actualizado a: https://github.com/$owner/$nombreRepo"
+              Write-Paso "Reintentando descarga..."
+              $descarga = Download-GitHubZip -Owner $owner -RepoName $nombreRepo -Branch $Rama -AuthToken $Token -OutZip $zip
+              if ($descarga.Success) {
+                $reintentar = $false
+                break
+              } else {
+                Write-Mal "Tampoco se pudo descargar desde 'https://github.com/$owner/$nombreRepo'."
+              }
+            }
+          }
+        } else {
+          Write-Mal "Actualizacion cancelada. Para repositorios privados, anade GITHUB_TOKEN=tu_token en tu archivo .env."
+          exit 1
+        }
+      }
     }
+
+    if (-not (Test-Path -LiteralPath $zip)) {
+      Write-Mal "No se pudo obtener el archivo ZIP de actualizacion."
+      exit 1
+    }
+
     Expand-Archive -LiteralPath $zip -DestinationPath $temp -Force
     # GitHub siempre extrae los contenidos en un unico directorio principal dentro del zip
     $carpeta = Get-ChildItem -Path $temp -Directory | Select-Object -First 1
@@ -335,8 +523,6 @@ if ($shaRemoto -and $versionLocal -and ($shaRemoto -eq $versionLocal)) {
       if ($rc.ExitCode -gt 0) { $archivosModificados = $true }
       Write-Registro "robocopy codigo $($rc.ExitCode)"
     } else {
-      # Fuera de Windows no hay robocopy: copia manual recursiva con las mismas
-      # exclusiones (en Windows real este camino no se usa; sirve para probar).
       Get-ChildItem -LiteralPath $carpeta.FullName -Force | ForEach-Object {
         Copy-Tree -Origen $_ -Destino (Join-Path $Raiz $_.Name)
       }
