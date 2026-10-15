@@ -17,6 +17,21 @@ export class AudioEngine {
   private keepAliveInterval: any = null;
   private isKeepAliveActive = false;
 
+  // Analizador para VU-meter / visualizador espectral
+  private analyser: AnalyserNode | null = null;
+
+  // Captura de audio de pestaña (getDisplayMedia) para enrutar la música de YouTube al ecualizador
+  private captureStream: MediaStream | null = null;
+  private tabStreamSource: MediaStreamAudioSourceNode | null = null;
+  private isTabAudioActive = false;
+  private tabAudioListeners: Set<(active: boolean) => void> = new Set();
+
+  // Generador de pista/ritmo sintetizado de prueba en tiempo real
+  private testGrooveTimer: any = null;
+  private isTestGrooveRunning = false;
+  private testGrooveStep = 0;
+  private testGrooveListeners: Set<(running: boolean) => void> = new Set();
+
   // Audio Ducking state and watchdog
   private isDucked = false;
   private duckingWatchdogTimer: any = null;
@@ -88,6 +103,11 @@ export class AudioEngine {
       this.masterGain = this.audioCtx.createGain();
       this.masterGain.gain.setValueAtTime(1.0, this.audioCtx.currentTime);
 
+      // 8. Analyser Node for visual VU-meter / frequency inspection
+      this.analyser = this.audioCtx.createAnalyser();
+      this.analyser.fftSize = 64;
+      this.analyser.smoothingTimeConstant = 0.8;
+
       // Chain connections
       this.bassFilter
         .connect(this.midFilter)
@@ -96,6 +116,7 @@ export class AudioEngine {
         .connect(this.bassBoostFilter)
         .connect(this.compressor)
         .connect(this.masterGain)
+        .connect(this.analyser)
         .connect(this.audioCtx.destination);
     } catch (e) {
       console.warn("Web Audio API init error:", e);
@@ -108,10 +129,15 @@ export class AudioEngine {
     }
   }
 
+  public getAnalyser(): AnalyserNode | null {
+    return this.analyser;
+  }
+
   // Update EQ bands and DSP
   public applySettings(settings: EqualizerSettings) {
     this.init();
     if (!this.audioCtx) return;
+    this.resume();
 
     const isEqEnabled = settings.enabled !== false;
 
@@ -260,11 +286,6 @@ export class AudioEngine {
   /**
    * Enruta un elemento de audio externo (la voz neuronal del asistente) por el
    * ecualizador. Devuelve true si quedo enrutado; false = reproducirlo normal.
-   *
-   * Nota: la musica de YouTube NO se puede enrutar. Vive en un iframe de otro origen
-   * y el navegador no expone su audio al grafo Web Audio, asi que ningun ecualizador
-   * web puede procesarla (para eso hace falta un EQ del sistema o una extension que
-   * capture el audio de la pestana).
    */
   public connectMediaElement(el: HTMLMediaElement, volume = 1): boolean {
     try {
@@ -290,6 +311,264 @@ export class AudioEngine {
     } catch (e) {
       console.warn('AudioEngine connectMediaElement:', e);
       return false;
+    }
+  }
+
+  // ============================================================================
+  // ENRUTAMIENTO DE AUDIO DE PESTAÑA (YOUTUBE A ECUALIZADOR WEB AUDIO)
+  // ============================================================================
+
+  public isTabAudioConnected(): boolean {
+    return this.isTabAudioActive && this.captureStream !== null && this.captureStream.active;
+  }
+
+  public onTabAudioStateChange(callback: (active: boolean) => void): () => void {
+    this.tabAudioListeners.add(callback);
+    return () => {
+      this.tabAudioListeners.delete(callback);
+    };
+  }
+
+  private notifyTabAudioChange(active: boolean) {
+    this.tabAudioListeners.forEach(cb => {
+      try { cb(active); } catch (_) {}
+    });
+  }
+
+  /**
+   * Conecta el audio de la pestaña de SerchTube (incluyendo el reproductor de YouTube)
+   * directamente al ecualizador Web Audio utilizando la API de captura de pantalla/pestaña
+   * de Chromium con suppressLocalAudioPlayback: true.
+   */
+  public async startTabAudioCapture(): Promise<{ success: boolean; error?: string }> {
+    try {
+      this.init();
+      if (!this.audioCtx || !this.bassFilter) {
+        return { success: false, error: 'El subsistema Web Audio no está disponible en este navegador.' };
+      }
+      this.resume();
+
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) {
+        return { success: false, error: 'Este navegador no soporta la función de captura de pestaña/pantalla.' };
+      }
+
+      // Detener captura previa si estuviera en marcha
+      this.stopTabAudioCapture();
+
+      // Solicitar captura con silenciamiento de la reproducción local de Chromium
+      // para que el iframe de YouTube no duplique audio y pase 100% por el ecualizador
+      const stream = await navigator.mediaDevices.getDisplayMedia({
+        video: true,
+        audio: {
+          suppressLocalAudioPlayback: true,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        } as any,
+        preferCurrentTab: true,
+        selfBrowserSurface: 'include',
+        systemAudio: 'include',
+      } as any);
+
+      const audioTracks = stream.getAudioTracks();
+      if (audioTracks.length === 0) {
+        stream.getTracks().forEach(t => t.stop());
+        return {
+          success: false,
+          error: 'No se detectó la señal de audio. Al seleccionar la pestaña, recuerda activar la casilla "Compartir audio".'
+        };
+      }
+
+      // Pausar y desactivar pistas de vídeo para no consumir memoria ni CPU gráfica
+      stream.getVideoTracks().forEach(track => {
+        track.enabled = false;
+      });
+
+      this.captureStream = stream;
+      this.tabStreamSource = this.audioCtx.createMediaStreamSource(stream);
+      this.tabStreamSource.connect(this.bassFilter);
+      this.isTabAudioActive = true;
+
+      const handleEnded = () => {
+        this.stopTabAudioCapture();
+      };
+
+      audioTracks[0].onended = handleEnded;
+      if (stream.getVideoTracks()[0]) {
+        stream.getVideoTracks()[0].onended = handleEnded;
+      }
+
+      this.notifyTabAudioChange(true);
+      return { success: true };
+    } catch (e: any) {
+      if (e?.name === 'NotAllowedError') {
+        return { success: false, error: 'Permiso cancelado. Para conectar el audio debes seleccionar la pestaña y marcar "Compartir audio".' };
+      }
+      return { success: false, error: e?.message || 'No se pudo conectar el audio de la pestaña.' };
+    }
+  }
+
+  public stopTabAudioCapture() {
+    if (this.tabStreamSource) {
+      try { this.tabStreamSource.disconnect(); } catch (_) {}
+      this.tabStreamSource = null;
+    }
+    if (this.captureStream) {
+      try {
+        this.captureStream.getTracks().forEach(t => t.stop());
+      } catch (_) {}
+      this.captureStream = null;
+    }
+    const wasActive = this.isTabAudioActive;
+    this.isTabAudioActive = false;
+    if (wasActive) {
+      this.notifyTabAudioChange(false);
+    }
+  }
+
+  // ============================================================================
+  // PISTA / RITMO SINTETIZADO DE PRUEBA EN TIEMPO REAL
+  // Permite escuchar y verificar instantáneamente el efecto de cada banda y preset
+  // ============================================================================
+
+  public isTestGrooveActive(): boolean {
+    return this.isTestGrooveRunning;
+  }
+
+  public onTestGrooveStateChange(callback: (running: boolean) => void): () => void {
+    this.testGrooveListeners.add(callback);
+    return () => {
+      this.testGrooveListeners.delete(callback);
+    };
+  }
+
+  private notifyTestGrooveChange(running: boolean) {
+    this.testGrooveListeners.forEach(cb => {
+      try { cb(running); } catch (_) {}
+    });
+  }
+
+  public startTestGroove() {
+    this.init();
+    if (!this.audioCtx || !this.bassFilter) return;
+    this.resume();
+
+    if (this.isTestGrooveRunning) return;
+    this.isTestGrooveRunning = true;
+    this.testGrooveStep = 0;
+    this.notifyTestGrooveChange(true);
+
+    const stepIntervalMs = 230; // ~130 BPM semicorcheas/corcheas
+    const tick = () => {
+      if (!this.isTestGrooveRunning || !this.audioCtx) return;
+      this.playGrooveStep(this.testGrooveStep);
+      this.testGrooveStep = (this.testGrooveStep + 1) % 16;
+      this.testGrooveTimer = setTimeout(tick, stepIntervalMs);
+    };
+    tick();
+  }
+
+  public stopTestGroove() {
+    if (this.testGrooveTimer) {
+      clearTimeout(this.testGrooveTimer);
+      this.testGrooveTimer = null;
+    }
+    this.isTestGrooveRunning = false;
+    this.notifyTestGrooveChange(false);
+  }
+
+  public toggleTestGroove(): boolean {
+    if (this.isTestGrooveRunning) {
+      this.stopTestGroove();
+      return false;
+    } else {
+      this.startTestGroove();
+      return true;
+    }
+  }
+
+  private playGrooveStep(step: number) {
+    if (!this.audioCtx || !this.bassFilter) return;
+    const now = this.audioCtx.currentTime;
+
+    // 1. Kick con sub-graves profundos (golpea en pasos 0, 4, 8, 12 y síncopa en 14)
+    // Permite comprobar inmediatamente el impacto del deslizador de Graves (100Hz) y Bass Boost (60Hz)
+    if (step === 0 || step === 4 || step === 8 || step === 12 || step === 14) {
+      const kickOsc = this.audioCtx.createOscillator();
+      const kickGain = this.audioCtx.createGain();
+
+      kickOsc.type = 'sine';
+      kickOsc.frequency.setValueAtTime(120, now);
+      kickOsc.frequency.exponentialRampToValueAtTime(45, now + 0.15);
+
+      kickGain.gain.setValueAtTime(0.45, now);
+      kickGain.gain.exponentialRampToValueAtTime(0.001, now + 0.22);
+
+      kickOsc.connect(kickGain);
+      kickGain.connect(this.bassFilter);
+
+      kickOsc.start(now);
+      kickOsc.stop(now + 0.24);
+    }
+
+    // 2. Caja / Clap en medios (golpea en pasos 4 y 12)
+    // Permite comprobar los deslizadores de Medios (1kHz) y Presencia (3.5kHz)
+    if (step === 4 || step === 12) {
+      const snareOsc = this.audioCtx.createOscillator();
+      const snareGain = this.audioCtx.createGain();
+
+      snareOsc.type = 'triangle';
+      snareOsc.frequency.setValueAtTime(240, now);
+      snareOsc.frequency.exponentialRampToValueAtTime(140, now + 0.08);
+
+      snareGain.gain.setValueAtTime(0.25, now);
+      snareGain.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+
+      snareOsc.connect(snareGain);
+      snareGain.connect(this.bassFilter);
+
+      snareOsc.start(now);
+      snareOsc.stop(now + 0.13);
+    }
+
+    // 3. Hi-Hat brillante en agudos (golpea en pasos pares)
+    // Permite comprobar de inmediato el deslizador de Agudos (9kHz)
+    if (step % 2 === 0) {
+      const hatOsc = this.audioCtx.createOscillator();
+      const hatGain = this.audioCtx.createGain();
+
+      hatOsc.type = 'sawtooth';
+      hatOsc.frequency.setValueAtTime(step % 4 === 2 ? 9500 : 8500, now);
+
+      hatGain.gain.setValueAtTime(0.09, now);
+      hatGain.gain.exponentialRampToValueAtTime(0.001, now + 0.04);
+
+      hatOsc.connect(hatGain);
+      hatGain.connect(this.bassFilter);
+
+      hatOsc.start(now);
+      hatOsc.stop(now + 0.05);
+    }
+
+    // 4. Nota armónica melódica (acorde suave en pasos 0, 3, 6, 8, 11)
+    // Demuestra claridad tonal y efectos de presencia vocal
+    if (step === 0 || step === 3 || step === 6 || step === 8 || step === 11) {
+      const notes = [261.63, 329.63, 392.00, 523.25]; // C4, E4, G4, C5
+      const noteFreq = notes[step % notes.length];
+      const melOsc = this.audioCtx.createOscillator();
+      const melGain = this.audioCtx.createGain();
+
+      melOsc.type = 'sine';
+      melOsc.frequency.setValueAtTime(noteFreq, now);
+
+      melGain.gain.setValueAtTime(0.12, now);
+      melGain.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+
+      melOsc.connect(melGain);
+      melGain.connect(this.bassFilter);
+
+      melOsc.start(now);
+      melOsc.stop(now + 0.19);
     }
   }
 
@@ -452,13 +731,23 @@ export class AudioEngine {
   }
 }
 
-export const PRESET_EQUALIZERS: Record<string, { bass: number; mid: number; presence: number; treble: number }> = {
-  'Hi-Fi': { bass: 0, mid: 0, presence: 0, treble: 0 },
-  'Bass Boost': { bass: 9, mid: 1, presence: -1, treble: 2 },
-  'Rock': { bass: 6, mid: -2, presence: 4, treble: 6 },
-  'Pop': { bass: 4, mid: 3, presence: 3, treble: 5 },
-  'Cine': { bass: 7, mid: 1, presence: 3, treble: 7 },
-  'Vocal': { bass: -2, mid: 6, presence: 5, treble: 1 },
-  'Conducción Nocturna': { bass: 5, mid: 2, presence: 1, treble: 3 },
-  'Zen / Relax': { bass: 3, mid: -1, presence: -2, treble: -1 }
+export interface EqPresetConfig {
+  bass: number;
+  mid: number;
+  presence: number;
+  treble: number;
+  bassBoost?: boolean;
+  bassBoostLevel?: number;
+  loudnessEnhancer?: boolean;
+}
+
+export const PRESET_EQUALIZERS: Record<string, EqPresetConfig> = {
+  'Hi-Fi': { bass: 0, mid: 0, presence: 0, treble: 0, bassBoost: false, bassBoostLevel: 50, loudnessEnhancer: false },
+  'Bass Boost': { bass: 9, mid: 1, presence: -1, treble: 2, bassBoost: true, bassBoostLevel: 85, loudnessEnhancer: true },
+  'Rock': { bass: 7, mid: -2, presence: 5, treble: 7, bassBoost: true, bassBoostLevel: 65, loudnessEnhancer: true },
+  'Pop': { bass: 5, mid: 3, presence: 4, treble: 6, bassBoost: false, bassBoostLevel: 50, loudnessEnhancer: true },
+  'Cine': { bass: 8, mid: 1, presence: 3, treble: 8, bassBoost: true, bassBoostLevel: 80, loudnessEnhancer: true },
+  'Vocal': { bass: -3, mid: 7, presence: 6, treble: 2, bassBoost: false, bassBoostLevel: 30, loudnessEnhancer: false },
+  'Conducción Nocturna': { bass: 6, mid: 2, presence: 2, treble: 3, bassBoost: true, bassBoostLevel: 60, loudnessEnhancer: true },
+  'Zen / Relax': { bass: 4, mid: -1, presence: -2, treble: -1, bassBoost: false, bassBoostLevel: 40, loudnessEnhancer: false }
 };

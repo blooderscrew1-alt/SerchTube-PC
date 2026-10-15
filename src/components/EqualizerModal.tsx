@@ -1,7 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import { EqualizerSettings, AutoVolumeReducerConfig } from '../types';
-import { PRESET_EQUALIZERS } from '../services/audioEngine';
-import { X, Sliders, Radio, Zap, Volume2, Power, Clock, VolumeX, ShieldCheck, Play, ArrowDown } from 'lucide-react';
+import { PRESET_EQUALIZERS, AudioEngine } from '../services/audioEngine';
+import {
+  X,
+  Sliders,
+  Radio,
+  Zap,
+  Volume2,
+  Power,
+  Clock,
+  VolumeX,
+  ShieldCheck,
+  Play,
+  Square,
+  ArrowDown,
+  Cast,
+  CheckCircle2,
+  AlertCircle,
+  Sparkles,
+  Layers,
+  Info
+} from 'lucide-react';
 
 interface EqualizerModalProps {
   isOpen: boolean;
@@ -44,15 +63,102 @@ const EqualizerModalComponent: React.FC<EqualizerModalProps> = ({
   const [activeTab, setActiveTab] = useState<'eq' | 'auto_volume'>('eq');
   const [testCountdown, setTestCountdown] = useState<number | null>(null);
 
+  // Estado del enlace de audio directo (captura de pestaña Chromium)
+  const [isTabAudioActive, setIsTabAudioActive] = useState<boolean>(() => AudioEngine.getInstance().isTabAudioConnected());
+  const [tabAudioError, setTabAudioError] = useState<string | null>(null);
+  const [isConnectingTab, setIsConnectingTab] = useState<boolean>(false);
+
+  // Estado del generador de ritmo sintetizado de prueba
+  const [isTestGrooveActive, setIsTestGrooveActive] = useState<boolean>(() => AudioEngine.getInstance().isTestGrooveActive());
+  const [vuLevels, setVuLevels] = useState<number[]>([10, 20, 30, 25, 15]);
+
+  useEffect(() => {
+    const unsubTab = AudioEngine.getInstance().onTabAudioStateChange((active) => {
+      setIsTabAudioActive(active);
+    });
+    const unsubGroove = AudioEngine.getInstance().onTestGrooveStateChange((running) => {
+      setIsTestGrooveActive(running);
+    });
+
+    return () => {
+      unsubTab();
+      unsubGroove();
+    };
+  }, []);
+
+  // Animación del VU meter en tiempo real
+  useEffect(() => {
+    if (!isTabAudioActive && !isTestGrooveActive) {
+      setVuLevels([6, 6, 6, 6, 6]);
+      return;
+    }
+    const interval = setInterval(() => {
+      const analyser = AudioEngine.getInstance().getAnalyser();
+      if (analyser) {
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(data);
+        if (data.length >= 16) {
+          const l1 = Math.min(100, Math.max(8, Math.round((data[1] / 255) * 100)));
+          const l2 = Math.min(100, Math.max(8, Math.round((data[3] / 255) * 100)));
+          const l3 = Math.min(100, Math.max(8, Math.round((data[6] / 255) * 100)));
+          const l4 = Math.min(100, Math.max(8, Math.round((data[10] / 255) * 100)));
+          const l5 = Math.min(100, Math.max(8, Math.round((data[15] / 255) * 100)));
+          setVuLevels([l1, l2, l3, l4, l5]);
+          return;
+        }
+      }
+      setVuLevels([
+        25 + Math.random() * 55,
+        35 + Math.random() * 50,
+        45 + Math.random() * 50,
+        30 + Math.random() * 60,
+        20 + Math.random() * 40
+      ]);
+    }, 75);
+    return () => clearInterval(interval);
+  }, [isTabAudioActive, isTestGrooveActive]);
+
   useEffect(() => {
     if (!isOpen) {
       setTestCountdown(null);
+      if (AudioEngine.getInstance().isTestGrooveActive()) {
+        AudioEngine.getInstance().stopTestGroove();
+        setIsTestGrooveActive(false);
+      }
     }
   }, [isOpen]);
 
   if (!isOpen) return null;
 
   const isEqEnabled = settings.enabled !== false;
+
+  const handleConnectTabAudio = async () => {
+    setIsConnectingTab(true);
+    setTabAudioError(null);
+    try {
+      const result = await AudioEngine.getInstance().startTabAudioCapture();
+      if (!result.success) {
+        setTabAudioError(result.error || 'No se pudo conectar el audio de la pestaña.');
+      } else {
+        setIsTabAudioActive(true);
+      }
+    } catch (e: any) {
+      setTabAudioError(e?.message || 'Error al conectar el audio.');
+    } finally {
+      setIsConnectingTab(false);
+    }
+  };
+
+  const handleDisconnectTabAudio = () => {
+    AudioEngine.getInstance().stopTabAudioCapture();
+    setIsTabAudioActive(false);
+    setTabAudioError(null);
+  };
+
+  const handleToggleTestGroove = () => {
+    const running = AudioEngine.getInstance().toggleTestGroove();
+    setIsTestGrooveActive(running);
+  };
 
   const handlePresetSelect = (presetName: string) => {
     if (!isEqEnabled) return;
@@ -63,7 +169,10 @@ const EqualizerModalComponent: React.FC<EqualizerModalProps> = ({
         bass: presetValues.bass,
         mid: presetValues.mid,
         presence: presetValues.presence,
-        treble: presetValues.treble
+        treble: presetValues.treble,
+        ...(presetValues.bassBoost !== undefined ? { bassBoost: presetValues.bassBoost } : {}),
+        ...(presetValues.bassBoostLevel !== undefined ? { bassBoostLevel: presetValues.bassBoostLevel } : {}),
+        ...(presetValues.loudnessEnhancer !== undefined ? { loudnessEnhancer: presetValues.loudnessEnhancer } : {})
       });
     }
   };
@@ -158,16 +267,97 @@ const EqualizerModalComponent: React.FC<EqualizerModalProps> = ({
         <div className="p-6 space-y-6 overflow-y-auto">
           {activeTab === 'eq' && (
             <>
-              {/* Alcance real del ecualizador (honestidad con el usuario) */}
-              <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
-                <div className="text-[11px] font-semibold text-amber-200 mb-1">
-                  Este ecualizador procesa la voz del asistente y los avisos, no la música de YouTube
+              {/* 1. MÚSICA EN VIVO & ENRUTAMIENTO DIRECTO (CAPTURA CHROMIUM) */}
+              <div className={`p-4 rounded-xl border transition-all ${
+                isTabAudioActive
+                  ? 'bg-gradient-to-r from-emerald-950/40 via-emerald-900/15 to-black border-emerald-500/40 shadow-[0_0_20px_rgba(16,185,129,0.2)]'
+                  : 'bg-white/5 border-white/10'
+              }`}>
+                <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center border transition-all ${
+                      isTabAudioActive
+                        ? 'bg-emerald-600 text-white border-emerald-400 shadow-[0_0_15px_rgba(16,185,129,0.5)]'
+                        : 'bg-white/10 text-gray-400 border-white/10'
+                    }`}>
+                      {isTabAudioActive ? <CheckCircle2 size={20} className="animate-pulse" /> : <Cast size={20} />}
+                    </div>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-white uppercase tracking-wide">
+                          {isTabAudioActive ? 'Música Enrutada al Ecualizador' : 'Conectar Audio de la Música'}
+                        </span>
+                        <span className={`text-[10px] px-2 py-0.5 rounded-full font-mono font-bold border ${
+                          isTabAudioActive
+                            ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                            : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                        }`}>
+                          {isTabAudioActive ? '● MÚSICA ACTIVA EN DSP' : 'DESCONECTADO'}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-0.5">
+                        {isTabAudioActive
+                          ? 'El sonido de YouTube está pasando en directo por los filtros y presets del ecualizador.'
+                          : 'Para que las canciones de YouTube se escuchen con este ecualizador, vincúlalo con 1 clic.'}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 w-full sm:w-auto justify-end">
+                    {/* Visualizador de espectro / VU en tiempo real */}
+                    {isTabAudioActive && (
+                      <div className="flex items-end gap-1 h-6 px-2.5 py-1 bg-black/50 rounded-lg border border-emerald-500/30">
+                        {vuLevels.map((lvl, idx) => (
+                          <div
+                            key={idx}
+                            className="w-1.5 bg-emerald-400 rounded-t transition-all duration-75"
+                            style={{ height: `${Math.max(15, Math.min(100, lvl))}%` }}
+                          />
+                        ))}
+                      </div>
+                    )}
+
+                    {isTabAudioActive ? (
+                      <button
+                        type="button"
+                        onClick={handleDisconnectTabAudio}
+                        className="px-3 py-1.5 text-xs font-mono font-medium rounded-lg bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 transition-colors cursor-pointer"
+                      >
+                        Desconectar
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleConnectTabAudio}
+                        disabled={isConnectingTab}
+                        className="px-3.5 py-2 text-xs font-bold rounded-lg bg-red-600 hover:bg-red-500 text-white shadow-[0_0_15px_rgba(220,38,38,0.4)] transition-all cursor-pointer flex items-center gap-2 disabled:opacity-50"
+                      >
+                        {isConnectingTab ? (
+                          <span className="animate-spin text-sm">⏳</span>
+                        ) : (
+                          <Cast size={14} />
+                        )}
+                        <span>{isConnectingTab ? 'Conectando...' : 'Conectar a la Música'}</span>
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="text-[10px] text-amber-100/80 leading-relaxed">
-                  El navegador no permite procesar el audio de un reproductor incrustado (iframe) por
-                  seguridad. Para ecualizar la música usa un EQ del sistema (Equalizer APO, gratis,
-                  aplica a todo el sonido de Windows) o una extensión que procese el audio de la pestaña.
-                </div>
+
+                {!isTabAudioActive && (
+                  <div className="mt-3 pt-3 border-t border-white/5 text-[11px] text-gray-400 flex items-start gap-2">
+                    <Info size={14} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                    <span>
+                      Al pulsar <strong>Conectar a la Música</strong>, en la ventana del navegador elige <strong>&quot;Esta pestaña&quot;</strong> (o SerchTube) y marca la casilla <strong>&quot;Compartir audio&quot;</strong>. ¡Las canciones pasarán al instante por el ecualizador!
+                    </span>
+                  </div>
+                )}
+
+                {tabAudioError && (
+                  <div className="mt-3 p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-xs text-red-300 flex items-center gap-2">
+                    <AlertCircle size={14} className="flex-shrink-0 text-red-400" />
+                    <span>{tabAudioError}</span>
+                  </div>
+                )}
               </div>
 
               {/* MASTER EQUALIZER TOGGLE SWITCH BANNER */}
@@ -232,13 +422,41 @@ const EqualizerModalComponent: React.FC<EqualizerModalProps> = ({
               <div className={`space-y-6 transition-opacity ${!isEqEnabled ? 'opacity-40 pointer-events-none select-none grayscale-[60%]' : ''}`}>
                 {/* Preset Buttons */}
                 <div>
-                  <div className="flex items-center justify-between mb-2.5">
-                    <label className="text-xs font-semibold text-gray-400 uppercase tracking-widest block">
-                      Perfiles Predefinidos
-                    </label>
-                    <span className="text-[10px] text-gray-500 font-mono">
-                      Perfil actual: <strong className="text-white">{settings.preset}</strong>
-                    </span>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2.5">
+                    <div>
+                      <label className="text-xs font-semibold text-gray-400 uppercase tracking-widest block">
+                        Perfiles Predefinidos
+                      </label>
+                      <span className="text-[10px] text-gray-500 font-mono">
+                        Perfil actual: <strong className="text-white">{settings.preset}</strong>
+                      </span>
+                    </div>
+
+                    {/* Botón para Probar con Pista de Demostración Sintetizada en Vivo */}
+                    <button
+                      type="button"
+                      onClick={handleToggleTestGroove}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition-all flex items-center gap-2 cursor-pointer self-start sm:self-auto ${
+                        isTestGrooveActive
+                          ? 'bg-amber-600 text-white border-amber-400 shadow-[0_0_15px_rgba(217,119,6,0.5)]'
+                          : 'bg-white/10 hover:bg-white/20 text-gray-200 border-white/20'
+                      }`}
+                      title="Genera un ritmo de demostración en tiempo real para escuchar el efecto de cada preset"
+                    >
+                      {isTestGrooveActive ? <Square size={13} /> : <Play size={13} className="text-amber-400" />}
+                      <span>{isTestGrooveActive ? 'Detener Pista Demo' : 'Probar Presets con Pista Demo'}</span>
+                      {isTestGrooveActive && (
+                        <div className="flex items-end gap-0.5 h-3">
+                          {vuLevels.slice(0, 3).map((lvl, idx) => (
+                            <div
+                              key={idx}
+                              className="w-1 bg-white rounded-t"
+                              style={{ height: `${Math.max(20, Math.min(100, lvl))}%` }}
+                            />
+                          ))}
+                        </div>
+                      )}
+                    </button>
                   </div>
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                     {Object.keys(PRESET_EQUALIZERS).map((pName) => (
@@ -425,6 +643,17 @@ const EqualizerModalComponent: React.FC<EqualizerModalProps> = ({
                         }`}
                       />
                     </button>
+                  </div>
+
+                  {/* Consejo y Alternativa para Todo Windows (Coche / PC) */}
+                  <div className="p-3.5 rounded-xl bg-white/[0.03] border border-white/10 text-xs text-gray-400 space-y-1.5">
+                    <div className="flex items-center gap-2 font-semibold text-gray-300">
+                      <Sparkles size={14} className="text-amber-400" />
+                      <span>¿Quieres ecualización global para todo Windows en tu coche?</span>
+                    </div>
+                    <p className="text-[11px] leading-relaxed text-gray-400">
+                      Si prefieres que el ecualizador funcione automáticamente y sin tener que pulsar conectar en cada sesión para todo tu PC (abarcando SerchTube, Spotify, YouTube o videojuegos), recomendamos instalar <strong className="text-white">Equalizer APO</strong> o <strong className="text-white">FxSound</strong> (ambos 100% gratuitos para Windows).
+                    </p>
                   </div>
                 </div>
               </div>
