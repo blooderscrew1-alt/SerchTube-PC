@@ -188,9 +188,10 @@
 body.cursor-idle-hidden,
 body.cursor-idle-hidden * {
   cursor: none !important;
+  pointer-events: none !important;
 }
 
-/* When cursor is idle/hidden, suppress hover borders, glows, and toolbars on clock & center widgets */
+/* When cursor is idle/hidden, suppress all hover borders, glows, selection highlights, toolbars, and description bubbles on clock, orb, and widgets */
 body.cursor-idle-hidden #screensaver-movable-clock {
   border-color: transparent !important;
   background-color: transparent !important;
@@ -208,5 +209,19 @@ body.cursor-idle-hidden #screensaver-movable-clock .group-hover\/clock\:translat
 body.cursor-idle-hidden #screensaver-movable-clock .group-hover\/clock\:pointer-events-auto {
   pointer-events: none !important;
 }
+
+/* Suppress all hover effects, floating toolbars, resize frames, helper texts, and description bubbles / tooltips globally when cursor is idle */
+body.cursor-idle-hidden [class*="group-hover"],
+body.cursor-idle-hidden [class*="peer-hover"],
+body.cursor-idle-hidden .floating-toolbar,
+body.cursor-idle-hidden [class*="tooltip"],
+body.cursor-idle-hidden [class*="description-bubble"],
+body.cursor-idle-hidden [class*="helper-text"],
+body.cursor-idle-hidden [title] {
+  opacity: 0 !important;
+  pointer-events: none !important;
+  visibility: hidden !important;
+}
+
 
 

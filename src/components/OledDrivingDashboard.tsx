@@ -618,48 +618,26 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
             <div className="bg-white/5 px-2.5 py-1 rounded-lg border border-white/10 text-xs font-mono text-gray-300">
               {currentTimeStr}
             </div>
-            <button
-              type="button"
-              onClick={onOpenNodeSync}
-              className="p-2 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 text-gray-300 hover:text-white transition-colors"
-              title="Ajustes de sincronización"
-            >
-              <Wifi size={16} />
-            </button>
           </div>
         </div>
 
-        {/* Main Remote Grid */}
+        {/* Main Remote Grid - Clean & Minimalist */}
         <div className="relative z-10 max-w-xl mx-auto w-full flex flex-col gap-4">
 
-          {/* Invitation to Add to Home Screen (PWA) with Offline Capability */}
-          <PWAInstallBanner />
-
-          {/* Disconnected / Host Scanner Alert Banner - SOLO VISIBLE SI REALMENTE SE PIERDE LA CONEXIÓN */}
+          {/* Disconnected minimal indicator if needed */}
           {!isSatelliteConnected && (
-            <div className="p-3.5 rounded-2xl bg-gradient-to-r from-red-950/70 via-black to-zinc-950/80 border border-red-500/40 shadow-xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn">
-              <div className="flex items-start gap-2.5">
-                <Radio size={20} className="text-red-400 shrink-0 mt-0.5 animate-pulse" />
-                <div>
-                  <div className="text-xs font-bold text-white flex items-center gap-2">
-                    <span>Host Desconectado / ¿Cambio de IP tras corte de luz?</span>
-                    <span className="text-[10px] px-1.5 py-0.2 rounded bg-red-500/20 text-red-300 font-mono">PUERTO :3000</span>
-                  </div>
-                  <p className="text-[11px] text-gray-300 mt-0.5 leading-snug">
-                    Si el router se reinició o cambió la IP del coche, el escáner rastrea automáticamente los puertos 3000 de tu subred para reconectar sin volver a escanear el QR.
-                  </p>
-                </div>
-              </div>
+            <div className="p-2.5 rounded-xl bg-red-950/40 border border-red-500/30 text-xs text-red-200 flex items-center justify-between">
+              <span>Buscando Host en red local...</span>
               <button
                 type="button"
                 onClick={() => setIsHostScannerOpen(true)}
-                className="self-end sm:self-center px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs shadow-[0_0_15px_rgba(239,68,68,0.35)] shrink-0 cursor-pointer active:scale-95 transition-all flex items-center gap-1.5"
+                className="px-2 py-1 rounded bg-red-600 text-white font-bold text-[10px] cursor-pointer"
               >
-                <Search size={14} />
-                <span>Escanear Red</span>
+                Escanear
               </button>
             </div>
           )}
+
 
           {/* 1. SILENT SEARCH & REMOTE COMMANDER BAR (BÚSQUEDA EN LA PARTE SUPERIOR) */}
           <div className="bg-zinc-900/90 border border-white/10 rounded-2xl p-4 sm:p-5 shadow-2xl backdrop-blur-md flex flex-col gap-2.5">

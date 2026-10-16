@@ -240,6 +240,20 @@ export const ReactiveOrb: React.FC<ReactiveOrbProps> = React.memo(({
   const [showWheelTooltip, setShowWheelTooltip] = useState<boolean>(false);
   const tooltipTimeoutRef = useRef<number | null>(null);
 
+  // Close hover toolbar and tooltips when mouse becomes idle
+  useEffect(() => {
+    const handleCursorIdle = (e: any) => {
+      if (e.detail?.idle && !isDraggingResize) {
+        setIsHovered(false);
+        setShowWheelTooltip(false);
+      }
+    };
+    window.addEventListener('serchtube:cursor-idle', handleCursorIdle);
+    return () => {
+      window.removeEventListener('serchtube:cursor-idle', handleCursorIdle);
+    };
+  }, [isDraggingResize]);
+
   const updateScale = useCallback((newScale: number) => {
     const clamped = Math.round(Math.max(0.4, Math.min(2.8, newScale)) * 100) / 100;
     setScale(clamped);
@@ -739,7 +753,7 @@ export const ReactiveOrb: React.FC<ReactiveOrbProps> = React.memo(({
 
           {/* Transcript / Spoken query */}
           {lastTranscript ? (
-            <h1 className="text-xl sm:text-3xl md:text-4xl font-light tracking-tight text-white animate-fadeIn max-w-xl break-words px-2 text-center drop-shadow-[0_0_16px_rgba(255,255,255,0.25)]">
+            <h1 className="text-3xl sm:text-5xl md:text-6xl font-extrabold tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-white via-cyan-200 to-amber-200 animate-pulse max-w-2xl break-words px-3 text-center drop-shadow-[0_0_35px_rgba(255,255,255,0.6)] transition-all">
               &ldquo;{lastTranscript}&rdquo;
             </h1>
           ) : (wakeWordInfo && wakeWordInfo.enabled && wakeWordInfo.isAwaitingCommand) ? (

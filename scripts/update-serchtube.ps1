@@ -301,55 +301,56 @@ function Download-GitHubZip {
   if ($Branch -eq 'main') { $branches += 'master' }
   elseif ($Branch -eq 'master') { $branches += 'main' }
 
+  $ownersToTry = @($Owner)
+  if ($Owner -eq 'blooderscrew1-alt') { $ownersToTry += 'blooderscrewi-alt' }
+  elseif ($Owner -eq 'blooderscrewi-alt') { $ownersToTry += 'blooderscrew1-alt' }
+
   if (Test-Path -LiteralPath $OutZip) {
     Remove-Item -Force -LiteralPath $OutZip -ErrorAction SilentlyContinue
   }
 
-  foreach ($b in $branches) {
-    # 1. API oficial de GitHub zipball (método oficial y único que descarga repositorios privados con Token)
-    $apiHeaders = @{
-      'User-Agent' = 'SerchTube-Updater'
-      'Accept'     = 'application/vnd.github+json'
-    }
-    if ($AuthToken) {
-      $apiHeaders['Authorization'] = "Bearer $AuthToken"
-    }
-
-    $apiUrl = "https://api.github.com/repos/$Owner/$RepoName/zipball/$b"
-    try {
-      Write-Paso "Probando descarga desde API de GitHub (rama $b)..."
-      Invoke-WebRequest -Uri $apiUrl -OutFile $OutZip -UseBasicParsing -TimeoutSec 180 -Headers $apiHeaders
-      if ((Test-Path -LiteralPath $OutZip) -and ((Get-Item -LiteralPath $OutZip).Length -gt 500)) {
-        return @{ Success = $true; Branch = $b; Method = 'api' }
+  foreach ($o in $ownersToTry) {
+    foreach ($b in $branches) {
+      $apiHeaders = @{
+        'User-Agent' = 'SerchTube-Updater'
+        'Accept'     = 'application/vnd.github+json'
       }
-    } catch {
-      Write-Registro "API zipball ($b) no disponible: $($_.Exception.Message)"
-    }
+      if ($AuthToken) { $apiHeaders['Authorization'] = "Bearer $AuthToken" }
 
-    # 2. Codeload directo de GitHub (método para repositorios públicos)
-    $codeloadUrl = "https://codeload.github.com/$Owner/$RepoName/zip/refs/heads/$b"
-    try {
-      Write-Paso "Probando descarga directa de codeload (rama $b)..."
-      $clHeaders = @{ 'User-Agent' = 'SerchTube-Updater' }
-      if ($AuthToken) { $clHeaders['Authorization'] = "Bearer $AuthToken" }
-      Invoke-WebRequest -Uri $codeloadUrl -OutFile $OutZip -UseBasicParsing -TimeoutSec 180 -Headers $clHeaders
-      if ((Test-Path -LiteralPath $OutZip) -and ((Get-Item -LiteralPath $OutZip).Length -gt 500)) {
-        return @{ Success = $true; Branch = $b; Method = 'codeload' }
+      $apiUrl = "https://api.github.com/repos/$o/$RepoName/zipball/$b"
+      try {
+        Write-Paso "Probando descarga desde API de GitHub ($o / rama $b)..."
+        Invoke-WebRequest -Uri $apiUrl -OutFile $OutZip -UseBasicParsing -TimeoutSec 180 -Headers $apiHeaders
+        if ((Test-Path -LiteralPath $OutZip) -and ((Get-Item -LiteralPath $OutZip).Length -gt 500)) {
+          return @{ Success = $true; Branch = $b; Owner = $o; Method = 'api' }
+        }
+      } catch {
+        Write-Registro "API zipball ($o / $b) no disponible: $($_.Exception.Message)"
       }
-    } catch {
-      Write-Registro "Codeload ($b) no disponible: $($_.Exception.Message)"
-    }
 
-    # 3. Archive directo de GitHub
-    $archiveUrl = "https://github.com/$Owner/$RepoName/archive/refs/heads/$b.zip"
-    try {
-      Write-Paso "Probando descarga desde archive (rama $b)..."
-      Invoke-WebRequest -Uri $archiveUrl -OutFile $OutZip -UseBasicParsing -TimeoutSec 180 -Headers @{ 'User-Agent' = 'SerchTube-Updater' }
-      if ((Test-Path -LiteralPath $OutZip) -and ((Get-Item -LiteralPath $OutZip).Length -gt 500)) {
-        return @{ Success = $true; Branch = $b; Method = 'archive' }
+      $codeloadUrl = "https://codeload.github.com/$o/$RepoName/zip/refs/heads/$b"
+      try {
+        Write-Paso "Probando descarga directa de codeload ($o / rama $b)..."
+        $clHeaders = @{ 'User-Agent' = 'SerchTube-Updater' }
+        if ($AuthToken) { $clHeaders['Authorization'] = "Bearer $AuthToken" }
+        Invoke-WebRequest -Uri $codeloadUrl -OutFile $OutZip -UseBasicParsing -TimeoutSec 180 -Headers $clHeaders
+        if ((Test-Path -LiteralPath $OutZip) -and ((Get-Item -LiteralPath $OutZip).Length -gt 500)) {
+          return @{ Success = $true; Branch = $b; Owner = $o; Method = 'codeload' }
+        }
+      } catch {
+        Write-Registro "Codeload ($o / $b) no disponible: $($_.Exception.Message)"
       }
-    } catch {
-      Write-Registro "Archive ($b) no disponible: $($_.Exception.Message)"
+
+      $archiveUrl = "https://github.com/$o/$RepoName/archive/refs/heads/$b.zip"
+      try {
+        Write-Paso "Probando descarga desde archive ($o / rama $b)..."
+        Invoke-WebRequest -Uri $archiveUrl -OutFile $OutZip -UseBasicParsing -TimeoutSec 180 -Headers @{ 'User-Agent' = 'SerchTube-Updater' }
+        if ((Test-Path -LiteralPath $OutZip) -and ((Get-Item -LiteralPath $OutZip).Length -gt 500)) {
+          return @{ Success = $true; Branch = $b; Owner = $o; Method = 'archive' }
+        }
+      } catch {
+        Write-Registro "Archive ($o / $b) no disponible: $($_.Exception.Message)"
+      }
     }
   }
 
