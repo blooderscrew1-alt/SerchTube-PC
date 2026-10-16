@@ -130,7 +130,7 @@ const DEFAULT_DISPLAY_VISUAL_CONFIG: DisplayVisualConfig = {
   orbOpacity: 1.0,
   orbScale: 1.0,
   showWavesAndMic: true,
-  showOrbOnlyOnWakeWord: true,
+  showOrbOnlyOnWakeWord: false,
   waveStyle: 'sine_harmonic',
   orbStyle: 'classic_core',
   waveScale: 1.0,

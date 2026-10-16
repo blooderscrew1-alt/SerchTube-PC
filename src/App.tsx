@@ -992,6 +992,7 @@ export default function App() {
     wavesOpacity: 0.85,
     orbOpacity: 1.0,
     showWavesAndMic: true,
+    showOrbOnlyOnWakeWord: false,
     waveStyle: 'sine_harmonic',
     waveScale: 1.0,
     waveHeight: 320,

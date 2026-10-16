@@ -233,7 +233,6 @@ export const OrbRenderer: React.FC<OrbRendererProps> = React.memo(({
         height: `${size}px`,
         opacity: Math.max(0, Math.min(1, opacity))
       }}
-      title="Toca para activar/desactivar escucha de voz"
     >
       <canvas
         ref={canvasRef}

@@ -216,8 +216,7 @@ body.cursor-idle-hidden [class*="peer-hover"],
 body.cursor-idle-hidden .floating-toolbar,
 body.cursor-idle-hidden [class*="tooltip"],
 body.cursor-idle-hidden [class*="description-bubble"],
-body.cursor-idle-hidden [class*="helper-text"],
-body.cursor-idle-hidden [title] {
+body.cursor-idle-hidden [class*="helper-text"] {
   opacity: 0 !important;
   pointer-events: none !important;
   visibility: hidden !important;
