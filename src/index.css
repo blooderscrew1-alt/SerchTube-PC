@@ -222,5 +222,25 @@ body.cursor-idle-hidden [class*="helper-text"] {
   visibility: hidden !important;
 }
 
+/* EXCEPCION IMPORTANTE: el QR del mando remoto es informacion permanente, no un
+   efecto hover. Su tarjeta contiene utilidades "group-hover:" para el zoom de
+   hover, asi que la regla anterior lo ocultaba solo a los 2,5 s de dejar el raton
+   quieto (y al arrancar, porque la app entra en estado inactivo de inmediato).
+   El QR debe seguir visible siempre; solo se restaura la visibilidad, el cursor
+   oculto y el "primer movimiento despierta" siguen funcionando igual. */
+body.cursor-idle-hidden #quick-remote-qr-card,
+body.cursor-idle-hidden #quick-remote-qr-card *,
+body.cursor-idle-hidden [data-keep-visible-when-idle],
+body.cursor-idle-hidden [data-keep-visible-when-idle] * {
+  opacity: 1 !important;
+  visibility: visible !important;
+}
+
+/* El contenedor blanco del QR usa group-hover:scale para ampliarse; con el cursor
+   inactivo debe conservar su tamano normal (sin desplazarse ni transparentarse). */
+body.cursor-idle-hidden #quick-remote-qr-card [class*="group-hover"] {
+  transform: none !important;
+}
+
 
 

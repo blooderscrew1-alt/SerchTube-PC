@@ -399,6 +399,29 @@ function Test-MicroConcedido([string]$Familia) {
   }
 }
 
+function Get-ExtensionesInstaladas([string]$Familia) {
+  # Cuenta las extensiones del perfil que se va a usar. SerchTube abre el navegador
+  # con tu perfil normal, asi que los content scripts de tus extensiones SI se
+  # ejecutan dentro de la pagina y tambien dentro del iframe de YouTube.
+  # Lo unico que no existe en la ventana tipo app es la barra de iconos; por eso las
+  # acciones utiles de las extensiones se exponen como botones en la barra inferior
+  # de SerchTube (por ejemplo el boton "Auto Zoom").
+  try {
+    $raices = @{
+      'Edge'   = Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data'
+      'Chrome' = Join-Path $env:LOCALAPPDATA 'Google\Chrome\User Data'
+      'Brave'  = Join-Path $env:LOCALAPPDATA 'BraveSoftware\Brave-Browser\User Data'
+    }
+    $raiz = $raices[$Familia]
+    if (-not $raiz) { return $null }
+    $dir = Join-Path $raiz 'Default\Extensions'
+    if (-not (Test-Path -LiteralPath $dir)) { return 0 }
+    return @(Get-ChildItem -LiteralPath $dir -Directory -ErrorAction SilentlyContinue).Count
+  } catch {
+    return $null
+  }
+}
+
 function Conceder-MicroEnPerfil {
   # Deja el permiso del micrófono escrito en el perfil DEDICADO (kiosco), así el
   # navegador no pregunta y NO hace falta ningún flag de Chromium (los flags de
@@ -632,6 +655,14 @@ try {
     if (-not $SinPermisoMicro) { Conceder-MicroEnPerfil }
   } else {
     Write-Paso "Perfil: el tuyo de siempre (extensiones, ajustes y claves guardadas)"
+    $numExtensiones = Get-ExtensionesInstaladas $nav.Nombre
+    if ($null -ne $numExtensiones) {
+      if ($numExtensiones -gt 0) {
+        Write-Paso "Extensiones: $numExtensiones en tu perfil de $($nav.Nombre); sus content scripts actuan tambien dentro de SerchTube."
+      } else {
+        Write-Aviso "No se han encontrado extensiones en el perfil de $($nav.Nombre). Si esperabas tenerlas, revisa el perfil elegido."
+      }
+    }
     if (Test-MicroConcedido) {
       Write-Paso "Microfono: ya tiene permiso guardado en tu perfil (no preguntara)."
     } else {

@@ -55,9 +55,11 @@ import {
   UserCheck,
   RefreshCw,
   Clipboard,
-  Trash2
+  Trash2,
+  Crop
 } from 'lucide-react';
 import { QuickRemoteQrCode } from './QuickRemoteQrCode';
+import { AutoZoomModeButton } from './AutoZoomModeButton';
 import { YouTubeAuthModal } from './YouTubeAuthModal';
 import { HostScannerModal } from './HostScannerModal';
 import { PWAInstallBanner } from './PWAInstallBanner';
@@ -115,9 +117,10 @@ interface OledDrivingDashboardProps {
 const DEFAULT_BOTTOM_BAR_LAYOUT: BottomBarLayoutConfig = {
   items: {
     qr_code: { id: 'qr_code', scale: 1.0, offsetX: 0, offsetY: 0, order: 0, hidden: false },
-    track_info: { id: 'track_info', scale: 1.0, offsetX: 0, offsetY: 0, order: 1, hidden: false },
-    playback_controls: { id: 'playback_controls', scale: 1.0, offsetX: 0, offsetY: 0, order: 2, hidden: false },
-    volume_nodes: { id: 'volume_nodes', scale: 1.0, offsetX: 0, offsetY: 0, order: 3, hidden: false }
+    autozoom_modes: { id: 'autozoom_modes', scale: 1.0, offsetX: 0, offsetY: 0, order: 1, hidden: false },
+    track_info: { id: 'track_info', scale: 1.0, offsetX: 0, offsetY: 0, order: 2, hidden: false },
+    playback_controls: { id: 'playback_controls', scale: 1.0, offsetX: 0, offsetY: 0, order: 3, hidden: false },
+    volume_nodes: { id: 'volume_nodes', scale: 1.0, offsetX: 0, offsetY: 0, order: 4, hidden: false }
   },
   overallHeightScale: 1.0,
   overallOffsetY: 0,
@@ -1954,6 +1957,18 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                 content: (
                   <div className="flex-shrink-0">
                     <QuickRemoteQrCode onOpenNodeSync={onOpenNodeSync} />
+                  </div>
+                )
+              },
+              autozoom_modes: {
+                name: 'Auto Zoom (extensión)',
+                icon: Crop,
+                content: (
+                  <div className="flex-shrink-0">
+                    <AutoZoomModeButton
+                      isFullscreen={isFullscreen}
+                      enabled={nodeRole !== 'satellite'}
+                    />
                   </div>
                 )
               },

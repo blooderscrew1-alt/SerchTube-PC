@@ -1017,7 +1017,7 @@ export interface ScreensaverConfig {
   };
 }
 
-export type BottomBarElementId = 'qr_code' | 'track_info' | 'playback_controls' | 'volume_nodes';
+export type BottomBarElementId = 'qr_code' | 'autozoom_modes' | 'track_info' | 'playback_controls' | 'volume_nodes';
 
 export interface BottomBarItemConfig {
   id: BottomBarElementId;
