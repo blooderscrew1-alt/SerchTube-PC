@@ -422,6 +422,42 @@ function Get-ExtensionesInstaladas([string]$Familia) {
   }
 }
 
+function Get-ExtensionAutoZoom {
+  # Devuelve la extension descomprimida "YouTube Auto Zoom" registrada en Edge,
+  # con la fecha en que Edge la registro. Sirve para saber si Edge sigue con la
+  # 1.7.0 en memoria (sin puente) aunque en disco ya este la 1.8.0: Edge NO vuelve
+  # a leer una extension descomprimida hasta que se recarga o se reinicia.
+  try {
+    $p = Join-Path $env:LOCALAPPDATA 'Microsoft\Edge\User Data\Default\Secure Preferences'
+    if (-not (Test-Path -LiteralPath $p)) { return $null }
+    $j = Get-Content -LiteralPath $p -Raw | ConvertFrom-Json
+    foreach ($prop in $j.extensions.settings.PSObject.Properties) {
+      $e = $prop.Value
+      if ($e.location -eq 4 -and $e.path -and ($e.path -match 'yt-blackbars')) {
+        $fecha = $null
+        try {
+          # Chromium guarda microsegundos desde 1601-01-01 UTC
+          $us = [int64]($e.last_update_time)
+          if ($us -gt 0) { $fecha = [datetime]::new(1601, 1, 1, 0, 0, 0, [DateTimeKind]::Utc).AddTicks($us * 10) }
+        } catch { }
+        return [pscustomobject]@{ Id = $prop.Name; Path = $e.path; Registrada = $fecha }
+      }
+    }
+  } catch { }
+  return $null
+}
+
+function Test-ExtensionConPuente([string]$RutaExtension) {
+  try {
+    if (-not $RutaExtension) { return $false }
+    $f = Join-Path $RutaExtension 'content.js'
+    if (-not (Test-Path -LiteralPath $f)) { return $false }
+    return [bool]((Get-Content -LiteralPath $f -Raw) -match 'serchtube-autozoom')
+  } catch {
+    return $false
+  }
+}
+
 function Conceder-MicroEnPerfil {
   # Deja el permiso del micrófono escrito en el perfil DEDICADO (kiosco), así el
   # navegador no pregunta y NO hace falta ningún flag de Chromium (los flags de
@@ -667,6 +703,21 @@ try {
       Write-Paso "Microfono: ya tiene permiso guardado en tu perfil (no preguntara)."
     } else {
       Write-Paso "Microfono: la primera vez el navegador pedira permiso; despues lo recuerda."
+    }
+
+    # Aviso clave: Edge NO vuelve a leer una extension descomprimida hasta que se
+    # recarga. Si el boton "Auto Zoom" de SerchTube muestra "Extension sin
+    # respuesta", la causa es esa. El boton es el diagnostico fiable: aqui solo se
+    # comprueba si la copia en disco ya trae el puente.
+    $extAutoZoom = Get-ExtensionAutoZoom
+    if ($extAutoZoom) {
+      if (Test-ExtensionConPuente $extAutoZoom.Path) {
+        Write-Paso "Extension Auto Zoom: copia en disco con el puente de SerchTube ($($extAutoZoom.Path))."
+        Write-Paso "Si el boton Auto Zoom dice 'sin respuesta', abre edge://extensions y pulsa Recargar."
+      } else {
+        Write-Aviso "La extension 'YouTube Auto Zoom' de Edge es la version antigua (sin puente)."
+        Write-Aviso "Actualizala desde este repositorio: la carpeta extensions\yt-blackbars ya trae la 1.8.0."
+      }
     }
   }
 

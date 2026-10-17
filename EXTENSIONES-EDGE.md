@@ -71,8 +71,17 @@ El estado se guarda en `localStorage` (`serchtube_autozoom_state`) y también en
 `chrome.storage.sync` de la extensión, de modo que SerchTube y `youtube.com`
 comparten la misma configuración.
 
-Si el icono muestra un triángulo ámbar y el texto *«Extensión no detectada»*,
-la extensión no está instalada o está desactivada en Edge (ver punto 4).
+El botón se **autodiagnostica**, así que no hace falta adivinar qué falla:
+
+| Lo que muestra | Significado |
+| --- | --- |
+| `Extensión v1.8.0 lista` ✅ | El puente funciona; el vídeo ya se está transformando. |
+| `Extensión sin respuesta` ⚠️ | La extensión no contesta. **Causa habitual: Edge sigue con la 1.7.0 cargada** (ver punto 4). |
+| `Actualiza: v1.7.0` | Responde pero es una versión sin puente completo. |
+
+Pasa el ratón por encima para ver además las barras negras medidas
+(`barras ↑0% ↓0% ←13% →13%`). El botón pequeño ⟳ de al lado fuerza un nuevo
+análisis del vídeo actual.
 
 El bloque se puede mover, escalar y reordenar como los demás: activa el botón de
 **modo diseño** (icono de rejilla) en la barra inferior.
@@ -93,9 +102,25 @@ La extensión está versionada en este repositorio, en `extensions/yt-blackbars/
 > La versión con el puente es la **1.8.0**. Puedes comprobarla en la tarjeta de
 > la extensión dentro de `edge://extensions`.
 
+> **Edge NO relee una extensión descomprimida** cuando cambian sus archivos en el
+> disco: solo lo hace al pulsar **Recargar** en `edge://extensions`, o al cerrar
+> Edge por completo y volver a abrirlo. Si el botón dice *«Extensión sin
+> respuesta»*, es casi siempre esto.
+
 ---
 
-## 5. El resto de tus extensiones
+## 6. Diagnóstico rápido
+
+| Síntoma | Qué hacer |
+| --- | --- |
+| El botón dice **«Extensión sin respuesta»** | `edge://extensions` → **Recargar** en YouTube Auto Zoom. Si no aparece ahí, cárgala con **Cargar descomprimida** apuntando a `extensions\yt-blackbars`. |
+| El botón dice **«v1.8.0 lista»** pero el vídeo no cambia | El vídeo ya llena su reproductor: esta extensión solo quita barras negras. Prueba con un vídeo con barras (4:3 o scope), o cambia a **Estirar**/**Zoom**. |
+| No pasa nada y el vídeo está dentro de SerchTube | Comprueba que el puente responda: pasa el ratón por el botón y mira la línea *Estado: conectada (v…)*. |
+| El QR del mando remoto desaparece | Corregido: era una regla CSS de cursor inactivo. Si lo sigues viendo, recarga sin caché (`Ctrl` + `Shift` + `R`). |
+
+---
+
+## 7. El resto de tus extensiones
 
 Cualquier extensión cuyo *content script* apunte a `<all_urls>` o a `localhost`
 funciona en SerchTube sin hacer nada más (por ejemplo un bloqueador de anuncios o

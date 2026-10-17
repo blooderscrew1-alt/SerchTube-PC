@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Crop, MoveHorizontal, Frame, PowerOff, Puzzle, AlertTriangle } from 'lucide-react';
+import { Crop, MoveHorizontal, Frame, PowerOff, Puzzle, AlertTriangle, RefreshCw, Check } from 'lucide-react';
 
 /**
  * Boton de accion rapida "Auto Zoom" de la barra de informacion inferior.
@@ -19,6 +19,10 @@ import { Crop, MoveHorizontal, Frame, PowerOff, Puzzle, AlertTriangle } from 'lu
  * Solucion: SerchTube envia mensajes `postMessage` al iframe (el content script
  * de la extension los escucha) para encender/apagar y conmutar sus tres modos,
  * y la extension responde con su estado real.
+ *
+ * IMPORTANTE: si la extension instalada en Edge es la 1.7.0 (sin puente), no
+ * responde a nada. El boton lo detecta y muestra "Sin respuesta" con el aviso
+ * de recargarla en edge://extensions. Este es el fallo mas habitual.
  */
 
 export type AutoZoomMode = 'zoom' | 'stretch' | 'fit';
@@ -33,6 +37,13 @@ export const BRIDGE_OUT = 'serchtube-autozoom-status';
 const SOURCE_IN = 'serchtube';
 const SOURCE_OUT = 'yt-autozoom';
 const IFRAME_ID = 'yt-player-iframe';
+
+/** Version minima de la extension que entiende el puente. */
+const BRIDGE_MIN_VERSION = '1.8.0';
+/** Tiempo sin respuesta tras el cual se avisa de que no hay extension. */
+const SIN_RESPUESTA_MS = 6000;
+/** Margen tras una accion del usuario en el que se ignoran los sondeos. */
+const IGNORAR_SONDEO_MS = 2500;
 
 export const AUTOZOOM_STATE_INFO: Record<
   AutoZoomState,
@@ -88,6 +99,20 @@ function persistState(state: AutoZoomState) {
   }
 }
 
+/** Compara versiones tipo "1.8.0" >= "1.8.0". */
+function versionSuficiente(version: string | null): boolean {
+  if (!version) return false;
+  const a = version.split('.').map((n) => parseInt(n, 10) || 0);
+  const b = BRIDGE_MIN_VERSION.split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const x = a[i] || 0;
+    const y = b[i] || 0;
+    if (x > y) return true;
+    if (x < y) return false;
+  }
+  return true;
+}
+
 interface AutoZoomModeButtonProps {
   /** Indica si el reproductor esta en pantalla completa dentro de SerchTube. */
   isFullscreen?: boolean;
@@ -102,11 +127,18 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
   className = ''
 }) => {
   const [state, setState] = useState<AutoZoomState>(readStoredState);
-  // null = aun no sabemos si la extension esta instalada/activa
-  const [extensionReady, setExtensionReady] = useState<boolean | null>(null);
+  // 'desconocido' hasta que responda (o deje de responder) la extension
+  const [estado, setEstado] = useState<'desconocido' | 'conectada' | 'sin_respuesta'>('desconocido');
+  const [version, setVersion] = useState<string | null>(null);
+  const [barras, setBarras] = useState<{ t: number; b: number; l: number; r: number } | null>(null);
+  const [aviso, setAviso] = useState<string | null>(null);
 
   const fullscreenRef = useRef<boolean>(isFullscreen);
   fullscreenRef.current = isFullscreen;
+  const estadoRef = useRef(estado);
+  estadoRef.current = estado;
+  const ultimaAccionRef = useRef<number>(0);
+  const ultimaRespuestaRef = useRef<number>(0);
 
   /** Envia un mensaje al content script que vive dentro del iframe de YouTube. */
   const postToPlayer = useCallback((payload: Record<string, unknown>): boolean => {
@@ -125,6 +157,7 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
   /** Aplica un estado completo (enabled + modo) en la extension. */
   const pushState = useCallback(
     (next: AutoZoomState) => {
+      ultimaAccionRef.current = Date.now();
       postToPlayer({
         action: 'set',
         enabled: next !== 'off',
@@ -144,9 +177,9 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
     persistState(state);
   }, [state, enabled, pushState]);
 
-  // Sondeo periodico: mantiene el puente vivo cuando el iframe se recrea al
-  // cambiar de video y sincroniza el boton si el usuario cambio el modo con
-  // Bloq Mayus o desde el popup de la extension.
+  // Sondeo: mantiene el puente vivo cuando el iframe se recrea al cambiar de
+  // video y sincroniza el boton si el usuario cambio el modo con Bloq Mayus o
+  // desde el popup de la extension. Nunca pisa una accion recien hecha aqui.
   useEffect(() => {
     if (!enabled) return;
     const tick = () => {
@@ -161,6 +194,18 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
     };
   }, [enabled, postToPlayer]);
 
+  // Vigilancia: si la extension no responde en unos segundos, se avisa.
+  useEffect(() => {
+    if (!enabled) return;
+    const comprobar = window.setInterval(() => {
+      const desde = Date.now() - ultimaRespuestaRef.current;
+      if (ultimaRespuestaRef.current === 0 || desde > SIN_RESPUESTA_MS) {
+        setEstado('sin_respuesta');
+      }
+    }, 1500);
+    return () => window.clearInterval(comprobar);
+  }, [enabled]);
+
   // Respuestas de la extension: sincroniza el estado real y confirma presencia.
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -168,7 +213,19 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
       if (!data || typeof data !== 'object') return;
       if (data.source !== SOURCE_OUT || data.type !== BRIDGE_OUT) return;
 
-      setExtensionReady(true);
+      ultimaRespuestaRef.current = Date.now();
+      setEstado('conectada');
+      if (data.version) setVersion(String(data.version));
+      if (data.bars && typeof data.bars === 'object') {
+        setBarras({ t: data.bars.t || 0, b: data.bars.b || 0, l: data.bars.l || 0, r: data.bars.r || 0 });
+      } else {
+        setBarras(null);
+      }
+
+      // No pisar una orden recien dada por el usuario: las respuestas de sondeo
+      // que iban en camino llegarian con el estado anterior y desharian el cambio.
+      if (Date.now() - ultimaAccionRef.current < IGNORAR_SONDEO_MS) return;
+
       const next: AutoZoomState =
         data.enabled === false ? 'off' : ((data.mode as AutoZoomMode) || 'zoom');
       setState(prev => (prev === next ? prev : next));
@@ -180,17 +237,45 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
   }, []);
 
   const cycle = useCallback(() => {
-    setState(prev => {
-      const next = ORDER[(ORDER.indexOf(prev) + 1) % ORDER.length];
-      return next;
-    });
-    // Aunque la extension no haya respondido todavia, se reintenta el envio.
-    setExtensionReady(prev => (prev === true ? prev : null));
+    setState(prev => ORDER[(ORDER.indexOf(prev) + 1) % ORDER.length]);
+    setAviso(null);
   }, []);
+
+  const redetectar = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    ultimaAccionRef.current = Date.now();
+    postToPlayer({ action: 'redetect', active: true });
+    setAviso('Redetectando…');
+    window.setTimeout(() => setAviso(null), 1800);
+  }, [postToPlayer]);
 
   const info = AUTOZOOM_STATE_INFO[state];
   const isOff = state === 'off';
-  const notDetected = extensionReady === false;
+  const sinRespuesta = estado === 'sin_respuesta';
+  const versionVieja = estado === 'conectada' && !versionSuficiente(version);
+
+  const subtitulo = (() => {
+    if (sinRespuesta) return 'Extensión sin respuesta';
+    if (versionVieja) return `Actualiza: v${version}`;
+    if (estado === 'conectada') return `Extensión v${version || '?'} lista`;
+    return 'Toca para cambiar';
+  })();
+
+  const detalleBarras = barras
+    ? `barras ↑${Math.round(barras.t * 100)}% ↓${Math.round(barras.b * 100)}% ←${Math.round(barras.l * 100)}% →${Math.round(barras.r * 100)}%`
+    : 'aún sin medir';
+
+  const tooltip = [
+    info.hint,
+    '',
+    'Extensión: YouTube Auto Zoom - Barras negras',
+    `Estado: ${estado === 'conectada' ? `conectada (v${version})` : sinRespuesta ? 'sin respuesta' : 'comprobando…'}`,
+    `Detección: ${detalleBarras}`,
+    '',
+    sinRespuesta
+      ? 'La extensión no responde. Lo más probable: Edge sigue con la versión 1.7.0 cargada.\nAbre edge://extensions y pulsa "Recargar" en YouTube Auto Zoom (debe quedar en 1.8.0).'
+      : 'Clic: conmuta Zoom -> Estirar -> Ajustar -> Desactivado'
+  ].join('\n');
 
   return (
     <div
@@ -199,20 +284,14 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
       className={`relative flex items-center gap-2.5 p-2 rounded-2xl bg-black/70 border shadow-lg transition-colors duration-300 select-none flex-shrink-0 ${
         isOff ? 'border-white/15' : info.border
       } ${className}`}
-      title={`${info.hint}\n\nExtension: YouTube Auto Zoom - Barras negras\n${
-        notDetected
-          ? 'Estado: la extension no ha respondido. Comprueba que este instalada y activada en Edge (extensions/yt-blackbars).'
-          : 'Estado: conectada'
-      }`}
+      title={tooltip}
     >
       <button
         type="button"
         id="btn-autozoom-cycle"
         onClick={cycle}
-        className={`flex items-center gap-2.5 px-1 py-0.5 rounded-xl transition-all cursor-pointer group ${
-          isOff ? 'hover:bg-white/10' : 'hover:bg-white/10'
-        }`}
-        title="Conmutar modo de Auto Zoom: Zoom -> Estirar -> Ajustar -> Desactivado"
+        className="flex items-center gap-2.5 px-1 py-0.5 rounded-xl transition-all cursor-pointer hover:bg-white/10"
+        title={tooltip}
       >
         {/* Icono del modo actual */}
         <span
@@ -235,18 +314,34 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
             <span className="text-[9.5px] font-black text-red-400 uppercase tracking-wider truncate">
               Auto Zoom
             </span>
-            {notDetected && (
-              <AlertTriangle size={11} className="text-amber-400 shrink-0" aria-hidden />
+            {sinRespuesta && <AlertTriangle size={11} className="text-amber-400 shrink-0" />}
+            {!sinRespuesta && estado === 'conectada' && (
+              <Check size={11} className="text-emerald-400 shrink-0" />
             )}
           </span>
 
           <span className={`text-xs font-bold tracking-tight leading-tight ${info.accent}`}>
             {info.label}
           </span>
-          <span className="text-[10px] text-gray-400 leading-tight mt-0.5 truncate">
-            {notDetected ? 'Extensión no detectada' : 'Toca para cambiar'}
+          <span
+            className={`text-[10px] leading-tight mt-0.5 truncate ${
+              aviso ? 'text-cyan-300' : sinRespuesta || versionVieja ? 'text-amber-400' : 'text-gray-400'
+            }`}
+          >
+            {aviso || subtitulo}
           </span>
         </span>
+      </button>
+
+      {/* Accion secundaria: volver a analizar las barras del video actual */}
+      <button
+        type="button"
+        id="btn-autozoom-redetect"
+        onClick={redetectar}
+        className="self-start p-1 rounded-lg bg-white/5 hover:bg-white/15 border border-white/10 text-gray-400 hover:text-white transition-colors cursor-pointer flex-shrink-0"
+        title="Volver a detectar las barras negras de este vídeo"
+      >
+        <RefreshCw size={12} />
       </button>
     </div>
   );
