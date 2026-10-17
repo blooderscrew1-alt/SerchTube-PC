@@ -1,20 +1,52 @@
 const DEFAULTS = { enabled: true, mode: 'zoom', strength: 100, threshold: 26, maxZoom: 2.5 };
 const $ = id => document.getElementById(id);
 
-chrome.storage.sync.get(DEFAULTS, cfg => {
+/* Misma persistencia que el content script: local (por perfil, sobrevive a
+   reinicios) + sync (compartido entre equipos con la misma cuenta).
+   Al leer se prefiere local, luego sync, luego DEFAULTS. */
+function guardar(datos) {
+  try { chrome.storage.local.set(datos); } catch (e) {}
+  try { chrome.storage.sync.set(datos); } catch (e) {}
+}
+
+function cargar(cb) {
+  const normalizar = fuentes => {
+    const mezcla = Object.assign({}, DEFAULTS);
+    fuentes.forEach(f => { if (f) Object.keys(DEFAULTS).forEach(k => { if (k in f) mezcla[k] = f[k]; }); });
+    return mezcla;
+  };
+  try {
+    chrome.storage.local.get(null, local => {
+      try {
+        chrome.storage.sync.get(null, sync => cb(normalizar([sync, local])));
+      } catch (e) {
+        cb(normalizar([local]));
+      }
+    });
+  } catch (e) {
+    try {
+      chrome.storage.sync.get(null, sync => cb(normalizar([sync])));
+    } catch (e2) {
+      cb(normalizar([]));
+    }
+  }
+}
+
+cargar(cfg => {
   $('enabled').checked = cfg.enabled;
-  document.querySelector(`input[name=mode][value=${cfg.mode}]`).checked = true;
+  const radio = document.querySelector(`input[name=mode][value=${cfg.mode}]`);
+  if (radio) radio.checked = true;
   $('strength').value = cfg.strength; $('sv').textContent = cfg.strength + '%';
   $('maxZoom').value = cfg.maxZoom; $('mv').textContent = cfg.maxZoom + 'x';
   $('threshold').value = cfg.threshold; $('tv').textContent = cfg.threshold;
 });
 
-$('enabled').onchange = e => chrome.storage.sync.set({ enabled: e.target.checked });
+$('enabled').onchange = e => guardar({ enabled: e.target.checked });
 document.querySelectorAll('input[name=mode]').forEach(r =>
-  r.onchange = () => chrome.storage.sync.set({ mode: r.value }));
-$('strength').oninput = e => { $('sv').textContent = e.target.value + '%'; chrome.storage.sync.set({ strength: +e.target.value }); };
-$('maxZoom').oninput = e => { $('mv').textContent = e.target.value + 'x'; chrome.storage.sync.set({ maxZoom: +e.target.value }); };
-$('threshold').oninput = e => { $('tv').textContent = e.target.value; chrome.storage.sync.set({ threshold: +e.target.value }); };
+  r.onchange = () => guardar({ mode: r.value, enabled: true }));
+$('strength').oninput = e => { $('sv').textContent = e.target.value + '%'; guardar({ strength: +e.target.value }); };
+$('maxZoom').oninput = e => { $('mv').textContent = e.target.value + 'x'; guardar({ maxZoom: +e.target.value }); };
+$('threshold').oninput = e => { $('tv').textContent = e.target.value; guardar({ threshold: +e.target.value }); };
 
 $('redo').onclick = async () => {
   try {

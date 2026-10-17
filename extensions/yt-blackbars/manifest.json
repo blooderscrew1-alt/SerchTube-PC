@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YouTube Auto Zoom - Barras negras",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "description": "Detecta automáticamente las barras negras incrustadas en el video de YouTube y hace zoom o estira la imagen para eliminarlas. Compatible con SerchTube mediante el puente postMessage.",
   "permissions": ["storage"],
   "content_scripts": [

@@ -725,10 +725,13 @@ try {
     if ($extInstalada) {
       if (Test-ExtensionConPuente $extInstalada.Path) {
         Write-Paso "Extension Auto Zoom: instalada con el puente de SerchTube."
-        Write-Paso "Si el boton del pie muestra 'sin respuesta', abrela en edge://extensions y pulsa Recargar."
+        Write-Paso "Si el boton del pie muestra el punto ambar, abrela en edge://extensions y pulsa Recargar."
       } else {
-        Write-Aviso "La extension Auto Zoom instalada no trae el puente: se carga la del proyecto."
-        $CargarExtensionPropia = $true
+        # No se carga la copia del proyecto: al estar ya instalada habria DOS
+        # extensiones inyectando a la vez en el mismo iframe de YouTube.
+        Write-Aviso "La extension Auto Zoom instalada es la version antigua (sin puente de SerchTube)."
+        Write-Aviso "Abre edge://extensions y pulsa Recargar en 'YouTube Auto Zoom - Barras negras'."
+        Write-Aviso "Ruta instalada: $($extInstalada.Path)"
       }
     } else {
       Write-Paso "Extension Auto Zoom: no estaba instalada; se carga desde el proyecto para esta sesion."

@@ -248,16 +248,56 @@
     if (res) addSample(res);
   }
 
-  /* ---------- Configuración ---------- */
+  /* ---------- Configuración y persistencia del último estado ----------
+     Se guarda en chrome.storage.local (siempre disponible, por perfil, sobrevive
+     a reinicios del navegador y a la carga con --load-extension) y ADEMAS en
+     chrome.storage.sync (para compartirlo entre equipos con la misma cuenta).
+     Al arrancar se prefiere local, si no hay nada se usa sync, y si tampoco hay
+     nada se usan los DEFAULTS. Asi la extension recuerda siempre su ultimo modo. */
+  function guardarEstado(parcial) {
+    try { chrome.storage.local.set(parcial); } catch (_) {}
+    try { chrome.storage.sync.set(parcial); } catch (_) {}
+  }
+
+  function normalizar(fuentes) {
+    const mezcla = Object.assign({}, DEFAULTS);
+    // De menos a mas prioridad: primero sync, luego local.
+    (fuentes || []).forEach(f => { if (f) Object.keys(DEFAULTS).forEach(k => { if (k in f) mezcla[k] = f[k]; }); });
+    return mezcla;
+  }
+
+  function cargarEstado() {
+    const terminar = (local, sync) => {
+      cfg = normalizar([sync, local]);
+      console.log('[YT AutoZoom] estado restaurado:', JSON.stringify(cfg));
+      tick();
+    };
+
+    try {
+      chrome.storage.local.get(null, local => {
+        try {
+          chrome.storage.sync.get(null, sync => terminar(local, sync));
+        } catch (_) {
+          terminar(local, null);
+        }
+      });
+    } catch (_) {
+      try {
+        chrome.storage.sync.get(null, sync => terminar(null, sync));
+      } catch (_) {
+        terminar(null, null);
+      }
+    }
+  }
+
   console.log('[YT AutoZoom] cargado en', location.href);
-  chrome.storage.sync.get(DEFAULTS, stored => {
-    cfg = { ...DEFAULTS, ...stored };
-    tick();
-  });
+  cargarEstado();
 
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area !== 'sync') return;
-    for (const k in changes) cfg[k] = changes[k].newValue;
+    if (area !== 'local' && area !== 'sync') return;
+    for (const k in changes) {
+      if (k in DEFAULTS) cfg[k] = changes[k].newValue;
+    }
     updateButton();
     if (!cfg.enabled) { clearTransform(); return; }
     if (changes.threshold) resetDetection();
@@ -302,7 +342,7 @@
     else enabled = false;
 
     cfg.enabled = enabled; cfg.mode = mode;
-    chrome.storage.sync.set({ enabled, mode });
+    guardarEstado({ enabled, mode });
     if (enabled) render(); else clearTransform();
     updateButton();
     osd(enabled ? LABELS[mode] : 'Desactivado');
@@ -434,7 +474,7 @@
         if (typeof d.strength === 'number') cfg.strength = d.strength;
         if (typeof d.maxZoom === 'number') cfg.maxZoom = d.maxZoom;
         if (typeof d.threshold === 'number') cfg.threshold = d.threshold;
-        chrome.storage.sync.set({
+        guardarEstado({
           enabled: cfg.enabled,
           mode: cfg.mode,
           strength: cfg.strength,

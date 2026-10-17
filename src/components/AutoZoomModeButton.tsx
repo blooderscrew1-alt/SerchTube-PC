@@ -105,6 +105,12 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
 
   const fullscreenRef = useRef<boolean>(isFullscreen);
   fullscreenRef.current = isFullscreen;
+  // Ultimo modo real elegido. Al desactivar se sigue enviando este modo (y no
+  // "zoom") para que la extension recuerde con cual volver al reiniciar.
+  const ultimoModoRef = useRef<AutoZoomMode>(state === 'off' ? 'zoom' : (state as AutoZoomMode));
+  useEffect(() => {
+    if (state !== 'off') ultimoModoRef.current = state as AutoZoomMode;
+  }, [state]);
   const ultimaAccionRef = useRef<number>(0);
   const ultimaRespuestaRef = useRef<number>(0);
 
@@ -129,7 +135,7 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
       postToPlayer({
         action: 'set',
         enabled: next !== 'off',
-        mode: next === 'off' ? 'zoom' : next,
+        mode: next === 'off' ? ultimoModoRef.current : next,
         // En SerchTube el reproductor siempre es "la pantalla" del video, asi que
         // se le pide a la extension que actue como si estuviera en pantalla completa.
         active: true

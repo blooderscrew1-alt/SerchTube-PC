@@ -70,9 +70,19 @@ icono**. Su icono cambia según el modo activo:
 * **Clic derecho**: vuelve a analizar las barras negras del vídeo actual.
 * **Punto ámbar** en la esquina: la extensión no responde (ver punto 6).
 
-El estado se guarda en `localStorage` (`serchtube_autozoom_state`) y también en
-`chrome.storage.sync` de la extensión, de modo que SerchTube y `youtube.com`
-comparten la misma configuración.
+### Persistencia: la extensión recuerda siempre su último estado
+
+El modo se guarda en **`chrome.storage.local`** (siempre disponible, por perfil, y
+sobrevive a reiniciar el navegador y a la carga con `--load-extension`) y **además
+en `chrome.storage.sync`**, para compartirlo entre equipos con la misma cuenta. Al
+arrancar se prefiere `local`; si no hay nada, `sync`; y si tampoco, los valores por
+defecto.
+
+SerchTube guarda lo mismo en `localStorage` (`serchtube_autozoom_state`) y lo
+refuerza al arrancar, de modo que el estado sobrevive por partida doble.
+
+Al pasar a **Desactivado** se conserva el último modo real (no se resetea a Zoom):
+si estabas en *Ajustar* y lo apagas, al volver a encenderlo sigue en *Ajustar*.
 
 Pasa el ratón por encima: el tooltip se **autodiagnostica**, no hay que adivinar.
 
