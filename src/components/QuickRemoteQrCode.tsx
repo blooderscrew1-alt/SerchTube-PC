@@ -139,7 +139,6 @@ export const QuickRemoteQrCode: React.FC<QuickRemoteQrCodeProps> = ({
         id="quick-remote-qr-card"
         onClick={() => setIsModalOpen(true)}
         className={`group relative flex items-center gap-2.5 p-1.5 sm:p-2 rounded-2xl bg-black/70 hover:bg-black/90 border border-white/15 hover:border-red-500/50 shadow-lg hover:shadow-[0_0_20px_rgba(220,38,38,0.25)] transition-all duration-300 cursor-pointer flex-shrink-0 select-none ${className}`}
-        title="Escanea con tu celular para abrir el control remoto (clic para ampliar)"
       >
         {/* Crisp Large QR Code Container */}
         <div className="relative bg-white p-2 rounded-xl flex items-center justify-center flex-shrink-0 shadow-2xl group-hover:scale-[1.02] transition-transform duration-200">
