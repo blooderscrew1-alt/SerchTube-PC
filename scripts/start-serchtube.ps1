@@ -67,6 +67,10 @@ param(
   # "linea de comandos no compatible" en la ventana).
   [switch]$SinPermisoMicro,
 
+  # No cargar la extension "YouTube Auto Zoom" que trae el proyecto. Solo hace
+  # falta si prefieres instalar tus propias extensiones a mano.
+  [switch]$SinExtensionPropia,
+
   [switch]$SinNavegador,
   [switch]$SinAutoInicio,
   [switch]$QuitarAutoInicio,
@@ -704,20 +708,31 @@ try {
     } else {
       Write-Paso "Microfono: la primera vez el navegador pedira permiso; despues lo recuerda."
     }
+  }
 
-    # Aviso clave: Edge NO vuelve a leer una extension descomprimida hasta que se
-    # recarga. Si el boton "Auto Zoom" de SerchTube muestra "Extension sin
-    # respuesta", la causa es esa. El boton es el diagnostico fiable: aqui solo se
-    # comprueba si la copia en disco ya trae el puente.
-    $extAutoZoom = Get-ExtensionAutoZoom
-    if ($extAutoZoom) {
-      if (Test-ExtensionConPuente $extAutoZoom.Path) {
-        Write-Paso "Extension Auto Zoom: copia en disco con el puente de SerchTube ($($extAutoZoom.Path))."
-        Write-Paso "Si el boton Auto Zoom dice 'sin respuesta', abre edge://extensions y pulsa Recargar."
+  # --------------------------- 6.5) Extension Auto Zoom incluida en el proyecto
+  # La extension vive en extensions\yt-blackbars dentro del repositorio. Si el
+  # navegador elegido NO la tiene instalada, se carga para esta sesion con
+  # --load-extension: asi SerchTube funciona en cualquier PC sin instalar nada a
+  # mano. Si ya esta instalada no se toca, para no duplicarla.
+  # Nota: Edge no relee una extension descomprimida hasta pulsar Recargar en
+  # edge://extensions o reiniciar el navegador. Si el boton del pie muestra el
+  # punto ambar ("sin respuesta"), es exactamente eso.
+  $CargarExtensionPropia = $false
+  $ExtensionPropia = Join-Path $Raiz 'extensions\yt-blackbars'
+  if (-not $SinExtensionPropia -and (Test-Path -LiteralPath (Join-Path $ExtensionPropia 'manifest.json'))) {
+    $extInstalada = Get-ExtensionAutoZoom
+    if ($extInstalada) {
+      if (Test-ExtensionConPuente $extInstalada.Path) {
+        Write-Paso "Extension Auto Zoom: instalada con el puente de SerchTube."
+        Write-Paso "Si el boton del pie muestra 'sin respuesta', abrela en edge://extensions y pulsa Recargar."
       } else {
-        Write-Aviso "La extension 'YouTube Auto Zoom' de Edge es la version antigua (sin puente)."
-        Write-Aviso "Actualizala desde este repositorio: la carpeta extensions\yt-blackbars ya trae la 1.8.0."
+        Write-Aviso "La extension Auto Zoom instalada no trae el puente: se carga la del proyecto."
+        $CargarExtensionPropia = $true
       }
+    } else {
+      Write-Paso "Extension Auto Zoom: no estaba instalada; se carga desde el proyecto para esta sesion."
+      $CargarExtensionPropia = $true
     }
   }
 
@@ -759,6 +774,8 @@ try {
     $a = @('--no-first-run', '--no-default-browser-check', '--disable-session-crashed-bubble',
       '--hide-crash-restore-bubble', '--disable-background-mode', '--start-maximized')
     if ($UsarPerfilDedicado) { $a = @("--user-data-dir=`"$PerfilReal`"") + $a }
+    # Extension propia del proyecto: solo cuando el perfil no la tiene instalada.
+    if ($CargarExtensionPropia) { $a += "--load-extension=`"$ExtensionPropia`"" }
     if ($Modo -eq 'app') { $a += "--app=$Url" } else { $a += $Url }
     return $a
   }

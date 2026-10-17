@@ -55,42 +55,53 @@ Respuesta de la extensión → SerchTube
 
 ## 3. El botón "Auto Zoom" de la barra inferior
 
-En la barra de información inferior de la pantalla principal aparece el bloque
-**Auto Zoom** (junto al QR del mando remoto). Un solo toque conmuta los modos:
+En la barra de información inferior, **a la izquierda del botón de redimensionar
+y posicionar elementos** (icono de rejilla), hay un botón discreto de **solo
+icono**. Su icono cambia según el modo activo:
 
-```
-Zoom  →  Estirar  →  Ajustar  →  Desactivado  →  Zoom ...
-```
+| Icono | Modo |
+| --- | --- |
+| ⛶ recorte | **Zoom** — rellena la pantalla sin deformar (recorta los bordes sobrantes) |
+| ↔ flechas | **Estirar** — rellena todo estirando la imagen (puede deformar) |
+| ▭ marco | **Ajustar** — solo elimina las barras negras, sin recortar ni deformar |
+| ⏻ apagado | **Desactivado** — el vídeo se ve tal cual llega |
 
-* **Zoom**: rellena la pantalla sin deformar (recorta los bordes sobrantes).
-* **Estirar**: rellena todo estirando la imagen (puede deformar).
-* **Ajustar**: solo elimina las barras negras, sin recortar ni deformar.
-* **Desactivado**: el vídeo se ve tal cual llega.
+* **Clic izquierdo**: conmuta `Zoom → Estirar → Ajustar → Desactivado → Zoom…`
+* **Clic derecho**: vuelve a analizar las barras negras del vídeo actual.
+* **Punto ámbar** en la esquina: la extensión no responde (ver punto 6).
 
 El estado se guarda en `localStorage` (`serchtube_autozoom_state`) y también en
 `chrome.storage.sync` de la extensión, de modo que SerchTube y `youtube.com`
 comparten la misma configuración.
 
-El botón se **autodiagnostica**, así que no hace falta adivinar qué falla:
+Pasa el ratón por encima: el tooltip se **autodiagnostica**, no hay que adivinar.
 
-| Lo que muestra | Significado |
+| Lo que dice el tooltip | Significado |
 | --- | --- |
-| `Extensión v1.8.0 lista` ✅ | El puente funciona; el vídeo ya se está transformando. |
-| `Extensión sin respuesta` ⚠️ | La extensión no contesta. **Causa habitual: Edge sigue con la 1.7.0 cargada** (ver punto 4). |
-| `Actualiza: v1.7.0` | Responde pero es una versión sin puente completo. |
-
-Pasa el ratón por encima para ver además las barras negras medidas
-(`barras ↑0% ↓0% ←13% →13%`). El botón pequeño ⟳ de al lado fuerza un nuevo
-análisis del vídeo actual.
-
-El bloque se puede mover, escalar y reordenar como los demás: activa el botón de
-**modo diseño** (icono de rejilla) en la barra inferior.
+| `Estado: conectada (v1.8.0)` | El puente funciona; el vídeo ya se está transformando. |
+| `Estado: SIN RESPUESTA` | La extensión no contesta. **Causa habitual: Edge sigue con la 1.7.0 cargada** (ver punto 4). |
+| `Deteccion: barras ↑0% ↓0% ←13% →13%` | Barras negras medidas en el fotograma actual. |
 
 ---
 
-## 4. Instalar o actualizar la extensión en Edge
+## 4. La extensión ya viene con el proyecto
 
-La extensión está versionada en este repositorio, en `extensions/yt-blackbars/`.
+La extensión está versionada en el repositorio, en `extensions/yt-blackbars/`, y
+**el lanzador la carga automáticamente** si el navegador no la tiene instalada:
+
+```
+Iniciar SerchTube.bat
+  -> si la extensión no está instalada:  --load-extension=<repo>\extensions\yt-blackbars
+  -> si ya está instalada:               no se toca (evita duplicarla)
+```
+
+Es decir, en un PC nuevo **no hay que instalar nada a mano**: basta con ejecutar
+`Iniciar SerchTube.bat`. Si quieres desactivar esa carga automática, usa
+`Iniciar SerchTube.bat -SinExtensionPropia`.
+
+### Instalarla de forma permanente (opcional)
+
+Si prefieres tenerla instalada de verdad en tu perfil:
 
 1. Abre Edge y ve a `edge://extensions`.
 2. Activa **Modo de desarrollador** (abajo a la izquierda).
@@ -104,8 +115,8 @@ La extensión está versionada en este repositorio, en `extensions/yt-blackbars/
 
 > **Edge NO relee una extensión descomprimida** cuando cambian sus archivos en el
 > disco: solo lo hace al pulsar **Recargar** en `edge://extensions`, o al cerrar
-> Edge por completo y volver a abrirlo. Si el botón dice *«Extensión sin
-> respuesta»*, es casi siempre esto.
+> Edge por completo y volver a abrirlo. Si el botón muestra el punto ámbar, es
+> casi siempre esto.
 
 ---
 
@@ -113,9 +124,9 @@ La extensión está versionada en este repositorio, en `extensions/yt-blackbars/
 
 | Síntoma | Qué hacer |
 | --- | --- |
-| El botón dice **«Extensión sin respuesta»** | `edge://extensions` → **Recargar** en YouTube Auto Zoom. Si no aparece ahí, cárgala con **Cargar descomprimida** apuntando a `extensions\yt-blackbars`. |
-| El botón dice **«v1.8.0 lista»** pero el vídeo no cambia | El vídeo ya llena su reproductor: esta extensión solo quita barras negras. Prueba con un vídeo con barras (4:3 o scope), o cambia a **Estirar**/**Zoom**. |
-| No pasa nada y el vídeo está dentro de SerchTube | Comprueba que el puente responda: pasa el ratón por el botón y mira la línea *Estado: conectada (v…)*. |
+| Punto ámbar en el botón Auto Zoom | `edge://extensions` → **Recargar** en YouTube Auto Zoom. Si no aparece ahí, cierra Edge por completo y vuelve a lanzar `Iniciar SerchTube.bat` (carga la del proyecto sola). |
+| El tooltip dice **«conectada (v1.8.0)»** pero el vídeo no cambia | El vídeo ya llena su reproductor: esta extensión solo quita barras negras. Prueba con un vídeo con barras (4:3 o scope), o cambia a **Estirar**/**Zoom**. |
+| No pasa nada y el vídeo está dentro de SerchTube | Pasa el ratón por el botón y mira la línea *Estado:*. Si está conectada, el puente funciona. |
 | El QR del mando remoto desaparece | Corregido: era una regla CSS de cursor inactivo. Si lo sigues viendo, recarga sin caché (`Ctrl` + `Shift` + `R`). |
 
 ---

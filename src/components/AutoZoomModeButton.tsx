@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Crop, MoveHorizontal, Frame, PowerOff, Puzzle, AlertTriangle, RefreshCw, Check } from 'lucide-react';
+import { Crop, MoveHorizontal, Frame, PowerOff } from 'lucide-react';
 
 /**
- * Boton de accion rapida "Auto Zoom" de la barra de informacion inferior.
+ * Boton discreto "Auto Zoom" (solo icono) de la barra de informacion inferior,
+ * colocado junto al boton de redimensionar/posicionar elementos.
  *
  * Puente entre SerchTube y la extension de Edge "YouTube Auto Zoom - Barras
  * negras" (carpeta extensions/yt-blackbars de este repositorio).
@@ -14,15 +15,13 @@ import { Crop, MoveHorizontal, Frame, PowerOff, Puzzle, AlertTriangle, RefreshCw
  *    (localhost), asi que dentro del iframe nunca hay pantalla completa y la
  *    extension se quedaba inactiva.
  *  - Ademas, en la ventana tipo app de Edge no hay barra de extensiones, por lo
- *    que el popup de la extension no se puede abrir.
+ *    que su popup no se puede abrir.
  *
- * Solucion: SerchTube envia mensajes `postMessage` al iframe (el content script
- * de la extension los escucha) para encender/apagar y conmutar sus tres modos,
- * y la extension responde con su estado real.
- *
- * IMPORTANTE: si la extension instalada en Edge es la 1.7.0 (sin puente), no
- * responde a nada. El boton lo detecta y muestra "Sin respuesta" con el aviso
- * de recargarla en edge://extensions. Este es el fallo mas habitual.
+ * Controles:
+ *  - Clic izquierdo: conmuta Zoom -> Estirar -> Ajustar -> Desactivado.
+ *  - Clic derecho: vuelve a analizar las barras negras del video actual.
+ *  - El punto ambar avisa de que la extension no responde (hay que recargarla
+ *    en edge://extensions): es el fallo mas habitual.
  */
 
 export type AutoZoomMode = 'zoom' | 'stretch' | 'fit';
@@ -45,38 +44,11 @@ const SIN_RESPUESTA_MS = 6000;
 /** Margen tras una accion del usuario en el que se ignoran los sondeos. */
 const IGNORAR_SONDEO_MS = 2500;
 
-export const AUTOZOOM_STATE_INFO: Record<
-  AutoZoomState,
-  { label: string; badge: string; hint: string; accent: string; border: string }
-> = {
-  zoom: {
-    label: 'Zoom',
-    badge: 'ZOOM',
-    hint: 'Rellena la pantalla sin deformar (recorta bordes sobrantes)',
-    accent: 'text-red-400',
-    border: 'border-red-500/60'
-  },
-  stretch: {
-    label: 'Estirar',
-    badge: 'ESTIRA',
-    hint: 'Rellena todo estirando la imagen (puede deformar)',
-    accent: 'text-amber-400',
-    border: 'border-amber-500/60'
-  },
-  fit: {
-    label: 'Ajustar',
-    badge: 'AJUSTA',
-    hint: 'Solo quita las barras negras, sin recortar ni deformar',
-    accent: 'text-emerald-400',
-    border: 'border-emerald-500/60'
-  },
-  off: {
-    label: 'Desactivado',
-    badge: 'OFF',
-    hint: 'Auto Zoom apagado: se ve el video tal cual llega',
-    accent: 'text-gray-400',
-    border: 'border-white/15'
-  }
+const INFO: Record<AutoZoomState, { label: string; hint: string }> = {
+  zoom: { label: 'Zoom', hint: 'Rellena la pantalla sin deformar (recorta bordes sobrantes)' },
+  stretch: { label: 'Estirar', hint: 'Rellena todo estirando la imagen (puede deformar)' },
+  fit: { label: 'Ajustar', hint: 'Solo quita las barras negras, sin recortar ni deformar' },
+  off: { label: 'Desactivado', hint: 'Auto Zoom apagado: se ve el video tal cual llega' }
 };
 
 const ORDER: AutoZoomState[] = ['zoom', 'stretch', 'fit', 'off'];
@@ -127,16 +99,12 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
   className = ''
 }) => {
   const [state, setState] = useState<AutoZoomState>(readStoredState);
-  // 'desconocido' hasta que responda (o deje de responder) la extension
   const [estado, setEstado] = useState<'desconocido' | 'conectada' | 'sin_respuesta'>('desconocido');
   const [version, setVersion] = useState<string | null>(null);
   const [barras, setBarras] = useState<{ t: number; b: number; l: number; r: number } | null>(null);
-  const [aviso, setAviso] = useState<string | null>(null);
 
   const fullscreenRef = useRef<boolean>(isFullscreen);
   fullscreenRef.current = isFullscreen;
-  const estadoRef = useRef(estado);
-  estadoRef.current = estado;
   const ultimaAccionRef = useRef<number>(0);
   const ultimaRespuestaRef = useRef<number>(0);
 
@@ -238,112 +206,72 @@ export const AutoZoomModeButton: React.FC<AutoZoomModeButtonProps> = ({
 
   const cycle = useCallback(() => {
     setState(prev => ORDER[(ORDER.indexOf(prev) + 1) % ORDER.length]);
-    setAviso(null);
   }, []);
 
-  const redetectar = useCallback((e: React.MouseEvent) => {
-    e.stopPropagation();
+  const redetectar = useCallback(() => {
     ultimaAccionRef.current = Date.now();
     postToPlayer({ action: 'redetect', active: true });
-    setAviso('Redetectando…');
-    window.setTimeout(() => setAviso(null), 1800);
   }, [postToPlayer]);
 
-  const info = AUTOZOOM_STATE_INFO[state];
-  const isOff = state === 'off';
+  if (!enabled) return null;
+
+  const info = INFO[state];
   const sinRespuesta = estado === 'sin_respuesta';
   const versionVieja = estado === 'conectada' && !versionSuficiente(version);
 
-  const subtitulo = (() => {
-    if (sinRespuesta) return 'Extensión sin respuesta';
-    if (versionVieja) return `Actualiza: v${version}`;
-    if (estado === 'conectada') return `Extensión v${version || '?'} lista`;
-    return 'Toca para cambiar';
-  })();
-
   const detalleBarras = barras
     ? `barras ↑${Math.round(barras.t * 100)}% ↓${Math.round(barras.b * 100)}% ←${Math.round(barras.l * 100)}% →${Math.round(barras.r * 100)}%`
-    : 'aún sin medir';
+    : 'aun sin medir';
 
   const tooltip = [
+    `Auto Zoom: ${info.label}`,
     info.hint,
     '',
-    'Extensión: YouTube Auto Zoom - Barras negras',
-    `Estado: ${estado === 'conectada' ? `conectada (v${version})` : sinRespuesta ? 'sin respuesta' : 'comprobando…'}`,
-    `Detección: ${detalleBarras}`,
+    'Extension: YouTube Auto Zoom - Barras negras',
+    `Estado: ${estado === 'conectada' ? `conectada (v${version})` : sinRespuesta ? 'SIN RESPUESTA' : 'comprobando...'}`,
+    `Deteccion: ${detalleBarras}`,
     '',
+    'Clic: Zoom -> Estirar -> Ajustar -> Desactivado',
+    'Clic derecho: redetectar las barras de este video',
     sinRespuesta
-      ? 'La extensión no responde. Lo más probable: Edge sigue con la versión 1.7.0 cargada.\nAbre edge://extensions y pulsa "Recargar" en YouTube Auto Zoom (debe quedar en 1.8.0).'
-      : 'Clic: conmuta Zoom -> Estirar -> Ajustar -> Desactivado'
-  ].join('\n');
+      ? '\nLa extension no responde. Lo mas probable: Edge sigue con la 1.7.0 cargada.\nAbre edge://extensions y pulsa "Recargar" (debe quedar en 1.8.0).'
+      : ''
+  ]
+    .filter(Boolean)
+    .join('\n');
 
   return (
-    <div
-      id="quick-autozoom-card"
+    <button
+      id="btn-autozoom-quick"
+      type="button"
       data-keep-visible-when-idle
-      className={`relative flex items-center gap-2.5 p-2 rounded-2xl bg-black/70 border shadow-lg transition-colors duration-300 select-none flex-shrink-0 ${
-        isOff ? 'border-white/15' : info.border
-      } ${className}`}
+      onClick={cycle}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        redetectar();
+      }}
       title={tooltip}
+      aria-label={`Auto Zoom: ${info.label}`}
+      className={`relative p-1.5 rounded-lg border transition-all flex-shrink-0 cursor-pointer ${
+        state === 'off'
+          ? 'bg-white/5 hover:bg-white/15 border-white/10 text-gray-400 hover:text-white'
+          : 'bg-red-600/15 hover:bg-red-600/25 border-red-500/40 text-red-400 hover:text-red-300'
+      } ${sinRespuesta ? 'border-amber-500/60' : ''} ${className}`}
     >
-      <button
-        type="button"
-        id="btn-autozoom-cycle"
-        onClick={cycle}
-        className="flex items-center gap-2.5 px-1 py-0.5 rounded-xl transition-all cursor-pointer hover:bg-white/10"
-        title={tooltip}
-      >
-        {/* Icono del modo actual */}
-        <span
-          className={`relative w-11 h-11 rounded-xl flex items-center justify-center border flex-shrink-0 ${
-            isOff
-              ? 'bg-white/5 border-white/10 text-gray-400'
-              : 'bg-red-600/15 border-red-500/40 text-red-400'
-          }`}
-        >
-          {state === 'zoom' && <Crop size={20} />}
-          {state === 'stretch' && <MoveHorizontal size={20} />}
-          {state === 'fit' && <Frame size={20} />}
-          {isOff && <PowerOff size={20} />}
-        </span>
+      {state === 'zoom' && <Crop size={14} />}
+      {state === 'stretch' && <MoveHorizontal size={14} />}
+      {state === 'fit' && <Frame size={14} />}
+      {state === 'off' && <PowerOff size={14} />}
 
-        {/* Texto de estado */}
-        <span className="flex flex-col justify-center min-w-0 pr-1 text-left">
-          <span className="flex items-center gap-1 mb-0.5">
-            <Puzzle size={11} className="text-red-400 shrink-0" />
-            <span className="text-[9.5px] font-black text-red-400 uppercase tracking-wider truncate">
-              Auto Zoom
-            </span>
-            {sinRespuesta && <AlertTriangle size={11} className="text-amber-400 shrink-0" />}
-            {!sinRespuesta && estado === 'conectada' && (
-              <Check size={11} className="text-emerald-400 shrink-0" />
-            )}
-          </span>
-
-          <span className={`text-xs font-bold tracking-tight leading-tight ${info.accent}`}>
-            {info.label}
-          </span>
-          <span
-            className={`text-[10px] leading-tight mt-0.5 truncate ${
-              aviso ? 'text-cyan-300' : sinRespuesta || versionVieja ? 'text-amber-400' : 'text-gray-400'
-            }`}
-          >
-            {aviso || subtitulo}
-          </span>
-        </span>
-      </button>
-
-      {/* Accion secundaria: volver a analizar las barras del video actual */}
-      <button
-        type="button"
-        id="btn-autozoom-redetect"
-        onClick={redetectar}
-        className="self-start p-1 rounded-lg bg-white/5 hover:bg-white/15 border border-white/10 text-gray-400 hover:text-white transition-colors cursor-pointer flex-shrink-0"
-        title="Volver a detectar las barras negras de este vídeo"
-      >
-        <RefreshCw size={12} />
-      </button>
-    </div>
+      {/* Aviso discreto: la extension no responde */}
+      {sinRespuesta && (
+        <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+      )}
+      {/* Aviso: responde pero es una version sin puente completo */}
+      {versionVieja && !sinRespuesta && (
+        <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-orange-500" />
+      )}
+    </button>
   );
 };
 
