@@ -2016,15 +2016,15 @@ export default function App() {
           currentTime: 0
         }));
 
-        // Si la cola tiene pocas canciones, enriquecerla en segundo plano con la lista del artista y YouTube Mix
-        if (normalizedQueue.length < 10 && selected && selected.id) {
+        // Sincronizar inmediatamente con la cola oficial de YouTube Mix ("Más videos" / recomendaciones) para continuidad de música
+        if (selected && selected.id) {
           fetch(`/api/youtube/related?videoId=${selected.id}&artist=${encodeURIComponent(selected.artist || '')}&title=${encodeURIComponent(selected.title || '')}`)
             .then(r => r.ok ? r.json() : null)
             .then(relData => {
               if (relData && relData.items && Array.isArray(relData.items) && relData.items.length > 0) {
                 const freshTracks: Track[] = [];
-                const currentIds = new Set(normalizedQueue.map(t => t.id));
-                const currentKeys = new Set(normalizedQueue.map(t => normalizeSongKeyForDedup(t.title)).filter(Boolean));
+                const currentIds = new Set([selected.id]);
+                const currentKeys = new Set([normalizeSongKeyForDedup(selected.title)].filter(Boolean));
                 for (const it of relData.items) {
                   if (!it || !it.id || currentIds.has(it.id)) continue;
                   if (areSameSongClient(it.title, selected.title)) continue;
@@ -2038,7 +2038,8 @@ export default function App() {
                   freshTracks.push(it);
                 }
                 if (freshTracks.length > 0) {
-                  setPlaylistQueue(prev => [...prev, ...freshTracks]);
+                  setPlaylistQueue([selected, ...freshTracks]);
+                  setPlaylistIndex(0);
                 }
               }
             })
