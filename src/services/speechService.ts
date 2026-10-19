@@ -185,9 +185,18 @@ export function parseWakeWord(transcript: string, wakeWord: string = "música"):
     }
   }
 
-  // 3. Soporte para prefijos de invocación habituales ("oye música", "hey música", "serch", "serchtube")
+  // 3. Soporte para prefijos de invocación habituales y órdenes directas de abrir micrófono
   if (wakeWordIndex === -1) {
-    const conversationalPrefixes = ['oye musica', 'hey musica', 'hola musica', 'ok musica', 'oye serch', 'serchtube', 'serch'];
+    const conversationalPrefixes = [
+      'oye musica', 'hey musica', 'hola musica', 'ok musica', 'oye serch', 'serchtube', 'serch',
+      'abrir microfono', 'abre el microfono', 'abre microfono', 'abrir el microfono',
+      'activar microfono', 'activa el microfono', 'activa microfono',
+      'abrir micro', 'abre el micro', 'abre micro', 'activa el micro', 'activar micro',
+      'encender microfono', 'enciende el microfono', 'enciende microfono',
+      'iniciar microfono', 'inicia el microfono', 'inicia microfono',
+      'conectar microfono', 'conecta el microfono', 'conecta microfono',
+      'escuchar orden', 'escuchar comando', 'escucha orden', 'escucha comando'
+    ];
     for (const prefix of conversationalPrefixes) {
       const prefixRegex = new RegExp(`(?:^|\\s)${prefix}(?=\\s|$)`);
       const pMatch = normTranscript.match(prefixRegex);
@@ -196,6 +205,26 @@ export function parseWakeWord(transcript: string, wakeWord: string = "música"):
         matchedLength = prefix.length;
         matchedKeyword = prefix;
         break;
+      }
+    }
+  }
+
+  // 4. Órdenes breves directas para abrir micrófono ("microfono", "micro", "escucha", "escuchame", "abrir microfono")
+  if (wakeWordIndex === -1) {
+    const directMicOrders = [
+      /^(?:el\s+)?microfono$/i,
+      /^(?:el\s+)?micro$/i,
+      /^(?:escucha|escuchame|escuchame\s+serch|escucha\s+serch)$/i,
+      /^(?:abre|abrir|activa|activar)$/i
+    ];
+    for (const regex of directMicOrders) {
+      if (regex.test(normTranscript)) {
+        return {
+          hasWakeWord: true,
+          commandText: '',
+          isWakeWordOnly: true,
+          matchedKeyword: normTranscript
+        };
       }
     }
   }
@@ -210,9 +239,14 @@ export function parseWakeWord(transcript: string, wakeWord: string = "música"):
   const afterWakeWord = normTranscript.slice(wakeWordIndex + matchedLength).trim();
 
   // Limpiar palabras conectoras habituales al dictar una orden ("de", "que", "por favor", etc.)
-  const cleanCommand = afterWakeWord
+  let cleanCommand = afterWakeWord
     .replace(/^(de|que|por favor|a ver|y|me|nos)\s+/, '')
     .trim();
+
+  // Si tras la palabra clave el usuario dijo "abre el micrófono", "escuchar", etc., limpiarlo
+  if (/^(?:abre|abrir|activa|activar|pon|enciende|conecta|conectar)?\s*(?:el\s+)?(?:microfono|micro)\b/i.test(cleanCommand) || /^(?:escucha|escuchame|atento)$/i.test(cleanCommand)) {
+    cleanCommand = cleanCommand.replace(/^(?:abre|abrir|activa|activar|pon|enciende|conecta|conectar)?\s*(?:el\s+)?(?:microfono|micro)\s*/i, '').trim();
+  }
 
   const isWakeWordOnly = cleanCommand.length === 0;
 
@@ -430,22 +464,6 @@ export class SpeechService {
         this.recognition.onresult = (event: any) => {
           const now = Date.now();
 
-          // 🛡️ INMUNIDAD ACÚSTICA CONTRA LA PROPIA VOZ DEL ASISTENTE (TTS Echo Suppression)
-          // Descartar de raíz cualquier sonido si el asistente está hablando por síntesis de voz,
-          // si está procesando una orden, o si estamos en la ventana de enfriamiento post-respuesta.
-          // EXCEPCIÓN: si el micrófono está "caliente" (esperando comando tras la palabra clave),
-          // la escucha continúa aunque el saludo del TTS siga sonando.
-          const isTtsActive =
-            this.isSynthesizing ||
-            this.browserUtteranceActive ||
-            (this.neuralAudioEl && !this.neuralAudioEl.paused && !this.neuralAudioEl.ended) ||
-            (typeof window !== 'undefined' && 'speechSynthesis' in window && window.speechSynthesis.speaking) ||
-            now < this.ttsGuardUntil;
-
-          if (this.isProcessingCommand || (!this.awaitingCommand && (now < this.commandCooldownUntil || isTtsActive))) {
-            return;
-          }
-
           let interimTranscript = '';
           let finalTranscript = '';
           // Alternativas del motor de reconocimiento (rescatan la palabra clave mal transcrita)
@@ -455,11 +473,12 @@ export class SpeechService {
             const result = event.results[i];
             if (result.isFinal) {
               finalTranscript += result[0].transcript;
-              for (let j = 1; j < result.length; ++j) {
-                if (result[j] && result[j].transcript) alternatives.push(result[j].transcript);
-              }
             } else {
               interimTranscript += result[0].transcript;
+            }
+            // Recoger alternativas en TODO momento (tanto en interim como en final) para rescatar en milisegundos
+            for (let j = 1; j < result.length; ++j) {
+              if (result[j] && result[j].transcript) alternatives.push(result[j].transcript);
             }
           }
 
@@ -475,13 +494,17 @@ export class SpeechService {
 
           let candidate = rawCandidate;
 
-          // 🔁 Rescate por alternativas: solo sobre frases finalizadas para no activar falsos positivos con ruido intermedio
-          if (this.config.wakeWordEnabled !== false && alternatives.length > 0 && finalTranscript.trim()) {
-            const mainHit = parseWakeWord(candidate, this.config.wakeWord || 'música').hasWakeWord;
+          // ⚡ Rescate ultra-rápido por alternativas en milisegundos:
+          // Se evalúa de inmediato tanto en resultados provisionales (interim) como en finales.
+          // Si el motor escuchó "música" o la orden de abrir micro en cualquier alternativa secundaria,
+          // se adopta en <1ms sin esperar a que la frase se dé por terminada.
+          if (this.config.wakeWordEnabled !== false && alternatives.length > 0) {
+            const currentWake = this.config.wakeWord || 'música';
+            const mainHit = parseWakeWord(candidate, currentWake).hasWakeWord;
             if (!mainHit) {
               for (const alt of alternatives) {
-                if (parseWakeWord(alt, this.config.wakeWord || 'música').hasWakeWord) {
-                  console.log(`[SpeechService] 🔁 Alternativa rescatada: "${alt}" (principal: "${candidate}")`);
+                if (parseWakeWord(alt, currentWake).hasWakeWord) {
+                  console.log(`[SpeechService] ⚡ Alternativa instantánea rescatada (<5ms): "${alt}" (principal: "${candidate}")`);
                   candidate = alt.trim();
                   break;
                 }
@@ -489,33 +512,51 @@ export class SpeechService {
             }
           }
 
-          // 🛡️ Filtro Semántico Antirruido de Eco:
-          // Solo se aplica si NO estamos esperando una orden del usuario (awaitingCommand === false)
-          // y si el texto capturado es un eco idéntico y largo de la frase del asistente.
-          // NUNCA descartar si el usuario está dictando tras la palabra clave o si incluye órdenes musicales.
-          const normCandidate = normalizeText(candidate);
-          const normLastSpoken = normalizeText(this.lastSpokenText || '');
-          const esComandoUsuario = /^(reproduce|pon|toca|escuchar|musica|cancion|siguiente|anterior|pausa|deten|para|reanuda|sube|baja|volumen|busca)/i.test(normCandidate);
+          // ⚡ Evaluación prioritaria de la palabra clave u orden de abrir micrófono:
+          const currentWake = this.config.wakeWord || 'música';
+          const traePalabraClave = this.config.wakeWordEnabled !== false && parseWakeWord(candidate, currentWake).hasWakeWord;
 
-          if (
-            !this.awaitingCommand &&
-            !esComandoUsuario &&
-            this.lastSpokenText &&
-            now - this.lastSpokenTimestamp < 4000 &&
-            normCandidate.length >= 8 &&
-            normLastSpoken &&
-            (normCandidate === normLastSpoken || (normLastSpoken.length > 15 && normLastSpoken === normCandidate))
-          ) {
-            console.log(`[SpeechService] 🔇 Eco exacto de voz del asistente suprimido en micrófono: "${candidate}"`);
-            return;
+          // Si el audio trae la palabra clave o la orden de abrir micrófono, NUNCA se bloquea por enfriamiento ni TTS:
+          // se interrumpe cualquier locución previa y se responde de inmediato en milisegundos.
+          if (traePalabraClave) {
+            this.cancelOngoingSpeech();
+            this.commandCooldownUntil = 0;
+            this.ttsGuardUntil = 0;
+          } else {
+            // Inmunidad acústica estándar para sonido ambiental sin palabra clave
+            const isTtsActive =
+              this.isSynthesizing ||
+              this.browserUtteranceActive ||
+              (this.neuralAudioEl && !this.neuralAudioEl.paused && !this.neuralAudioEl.ended) ||
+              (typeof window !== 'undefined' && 'speechSynthesis' in window && window.speechSynthesis.speaking) ||
+              now < this.ttsGuardUntil;
+
+            if (this.isProcessingCommand || (!this.awaitingCommand && (now < this.commandCooldownUntil || isTtsActive))) {
+              return;
+            }
+
+            // 🛡️ Filtro Semántico Antirruido de Eco:
+            const normCandidate = normalizeText(candidate);
+            const normLastSpoken = normalizeText(this.lastSpokenText || '');
+            const esComandoUsuario = /^(reproduce|pon|toca|escuchar|musica|cancion|siguiente|anterior|pausa|deten|para|reanuda|sube|baja|volumen|busca|abre|abrir|activa|activar)/i.test(normCandidate);
+
+            if (
+              !this.awaitingCommand &&
+              !esComandoUsuario &&
+              this.lastSpokenText &&
+              now - this.lastSpokenTimestamp < 4000 &&
+              normCandidate.length >= 8 &&
+              normLastSpoken &&
+              (normCandidate === normLastSpoken || (normLastSpoken.length > 15 && normLastSpoken === normCandidate))
+            ) {
+              console.log(`[SpeechService] 🔇 Eco exacto de voz del asistente suprimido en micrófono: "${candidate}"`);
+              return;
+            }
           }
 
           if (accumulatedFinal.trim()) {
             console.log("[SpeechService] 🎙️ Final:", candidate);
             this.onTranscriptCallback?.(candidate, true);
-            // Limpiar la cola tras emitir: si se conserva, el texto viejo se pega a la
-            // siguiente frase y "música" sola se procesa como si ya trajera comando
-            // (ejecución directa) en vez de activar la escucha con su animación.
             this.finalTail = '';
           } else if (interimTranscript.trim()) {
             this.onTranscriptCallback?.(candidate, false);
@@ -528,8 +569,6 @@ export class SpeechService {
             this.isListening = false;
             this.onStatusChangeCallback?.('error');
           }
-          // 'audio-capture' (y también permisos fallidos al arrancar la PC): los micrófonos
-          // aún no están listos -> programar reintentos en vez de quedarse muerto
           if (event.error === 'audio-capture' || event.error === 'service-not-allowed' || event.error === 'not-allowed') {
             this.scheduleMicRetry();
           }
@@ -537,8 +576,7 @@ export class SpeechService {
 
         this.recognition.onend = () => {
           this.isListening = false;
-          // Auto-restart continuo y robusto: reintenta hasta 3 veces con retroceso,
-          // porque Chrome/Edge corta la sesión de reconocimiento con frecuencia.
+          // Auto-restart continuo ultra-ágil para que el micrófono esté siempre listo en milisegundos
           if (this.config.continuousListening && !this.isProcessingCommand && !this.config.satelliteMicOnly) {
             let attempts = 0;
             const tryRestart = () => {
@@ -547,14 +585,12 @@ export class SpeechService {
               try {
                 this.recognition.start();
               } catch (e) {
-                if (attempts < 3) setTimeout(tryRestart, 250 * attempts);
+                if (attempts < 3) setTimeout(tryRestart, 150 * attempts);
               }
             };
-            // Si el micrófono está esperando comando (tras la palabra de activación), NO retrasar el reinicio:
-            // el usuario está hablando y necesita ver sus palabras en pantalla de inmediato.
             const waitMs = this.awaitingCommand
-              ? 50
-              : Math.max(100, Math.min(1200, this.ttsGuardUntil > Date.now() ? (this.ttsGuardUntil - Date.now() + 50) : 100));
+              ? 15
+              : Math.max(30, Math.min(400, this.ttsGuardUntil > Date.now() ? (this.ttsGuardUntil - Date.now() + 20) : 30));
             setTimeout(tryRestart, waitMs);
           } else if (!this.isProcessingCommand) {
             this.onStatusChangeCallback?.('idle');
@@ -566,11 +602,33 @@ export class SpeechService {
     }
   }
 
+  private micPermissionGranted = false;
+
+  public cancelOngoingSpeech() {
+    this.isSynthesizing = false;
+    this.browserUtteranceActive = false;
+    this.ttsGuardUntil = 0;
+    try {
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    } catch (_) {}
+    if (this.neuralAudioEl) {
+      try {
+        this.neuralAudioEl.pause();
+        this.neuralAudioEl.currentTime = 0;
+      } catch (_) {}
+    }
+  }
+
   /**
    * Explicitly requests microphone hardware permission via getUserMedia.
    * Crucial for browsers which require a user gesture before allowing audio capture.
    */
   public async requestMicPermission(deviceId?: string): Promise<{ granted: boolean; error?: string }> {
+    if (this.micPermissionGranted && (!deviceId || deviceId === this.config.audioInputDeviceId)) {
+      return { granted: true };
+    }
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       return { granted: false, error: 'API de micrófono no disponible' };
     }
@@ -580,6 +638,7 @@ export class SpeechService {
         ? { deviceId: { exact: chosenDevice } }
         : true;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
+      this.micPermissionGranted = true;
       // Release tracks right away so Web Speech API can acquire the hardware
       stream.getTracks().forEach(t => t.stop());
       return { granted: true };

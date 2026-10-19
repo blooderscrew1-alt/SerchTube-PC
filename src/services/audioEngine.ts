@@ -60,6 +60,7 @@ export class AudioEngine {
       if (!AudioContextClass) return;
 
       this.audioCtx = new AudioContextClass();
+      this.preloadWakeSounds();
 
       // Create Multiband Filters
       // 1. Bass: Lowshelf around 100Hz
@@ -623,6 +624,37 @@ export class AudioEngine {
   // 🔔 Sonidos de notificación al activar el micrófono con la palabra clave
   // (sustituyen a los saludos hablados por TTS). MP3 ubicados en /public (carpeta main del proyecto).
   private wakeSoundElements: HTMLAudioElement[] | null = null;
+  private wakeAudioBuffers: Map<string, AudioBuffer> = new Map();
+  private isPreloadingWakeBuffers = false;
+
+  public preloadWakeSounds() {
+    if (typeof window === 'undefined') return;
+    this.init();
+    if (!this.audioCtx || this.isPreloadingWakeBuffers) return;
+    this.isPreloadingWakeBuffers = true;
+
+    const sources: { key: string; url: string }[] = [
+      { key: 'sub_bass', url: '/wake-sub-bass.mp3' },
+      { key: 'notification', url: '/wake-notification.mp3' }
+    ];
+
+    sources.forEach(({ key, url }) => {
+      fetch(url)
+        .then(res => {
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          return res.arrayBuffer();
+        })
+        .then(buf => this.audioCtx?.decodeAudioData(buf))
+        .then(decoded => {
+          if (decoded) {
+            this.wakeAudioBuffers.set(key, decoded);
+          }
+        })
+        .catch(err => {
+          console.warn(`[AudioEngine] Preload buffer notice for ${url}:`, err);
+        });
+    });
+  }
 
   private getWakeSounds(): HTMLAudioElement[] {
     if (!this.wakeSoundElements) {
@@ -638,43 +670,46 @@ export class AudioEngine {
 
   /**
    * Reproduce un sonido corto estilo notificación (sub bass o ringtone SMS)
-   * en lugar de decir una frase de saludo al detectar la palabra clave.
+   * en lugar de decir una frase de saludo al detectar la palabra clave o abrir el micro.
+   * Ejecución ultra-instantánea en milisegundos (<1ms) mediante Web Audio API AudioBuffer.
    */
   public playWakeSound(preference: string = 'random') {
     try {
       if (preference === 'none') return;
-      if (preference === 'sub_bass') {
-        const sounds = this.getWakeSounds();
-        if (sounds[0]) {
-          sounds[0].currentTime = 0;
-          sounds[0].play().catch(() => this.resume());
-        }
-        return;
+      this.init();
+      if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
       }
-      if (preference === 'notification') {
-        const sounds = this.getWakeSounds();
-        if (sounds[1]) {
-          sounds[1].currentTime = 0;
-          sounds[1].play().catch(() => this.resume());
-        }
-        return;
-      }
-      if (preference === 'cyberpunk' || preference === 'sonar' || preference === 'chime' || preference === 'futuristic') {
-        this.playSynthesizedWakeSound(preference);
-        return;
-      }
-      // 'random' or default
+
       const allOptions = ['sub_bass', 'notification', 'cyberpunk', 'sonar', 'chime', 'futuristic'];
-      const chosen = allOptions[Math.floor(Math.random() * allOptions.length)];
-      if (chosen === 'sub_bass') {
+      const chosen = preference === 'random'
+        ? allOptions[Math.floor(Math.random() * allOptions.length)]
+        : preference;
+
+      if (chosen === 'sub_bass' || chosen === 'notification') {
+        const buf = this.wakeAudioBuffers.get(chosen);
+        if (buf && this.audioCtx) {
+          const source = this.audioCtx.createBufferSource();
+          source.buffer = buf;
+          const gain = this.audioCtx.createGain();
+          gain.gain.value = chosen === 'sub_bass' ? 0.95 : 0.8;
+          source.connect(gain);
+          gain.connect(this.bassFilter ? this.bassFilter : this.audioCtx.destination);
+          source.start(0);
+          return;
+        }
+
+        // Respaldo inmediato por HTMLAudioElement si el buffer aún estuviera cargando
         const sounds = this.getWakeSounds();
-        if (sounds[0]) { sounds[0].currentTime = 0; sounds[0].play().catch(() => this.resume()); }
-      } else if (chosen === 'notification') {
-        const sounds = this.getWakeSounds();
-        if (sounds[1]) { sounds[1].currentTime = 0; sounds[1].play().catch(() => this.resume()); }
-      } else {
-        this.playSynthesizedWakeSound(chosen);
+        const idx = chosen === 'sub_bass' ? 0 : 1;
+        if (sounds[idx]) {
+          sounds[idx].currentTime = 0;
+          sounds[idx].play().catch(() => this.resume());
+        }
+        return;
       }
+
+      this.playSynthesizedWakeSound(chosen);
     } catch (e) {
       console.warn("AudioEngine playWakeSound error:", e);
     }

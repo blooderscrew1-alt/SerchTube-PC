@@ -111,6 +111,8 @@ interface OledDrivingDashboardProps {
   playlistIndex?: number;
   onSelectTrackFromQueue?: (track: Track, index: number) => void;
   onClearPlaylistQueue?: () => void;
+  onQueueReferenceUpdated?: (tracks: Track[]) => void;
+  onTrackSelectedByPlayer?: (track: Track) => void;
 }
 
 const DEFAULT_BOTTOM_BAR_LAYOUT: BottomBarLayoutConfig = {
@@ -204,7 +206,9 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
   playlistQueue = [],
   playlistIndex = 0,
   onSelectTrackFromQueue,
-  onClearPlaylistQueue
+  onClearPlaylistQueue,
+  onQueueReferenceUpdated,
+  onTrackSelectedByPlayer
 }) => {
   const [quickSearchInput, setQuickSearchInput] = useState('');
   const [currentTimeStr, setCurrentTimeStr] = useState('');
@@ -1146,6 +1150,8 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
           onToggleFullscreen={onToggleFullscreen}
           autoVolumeConfig={autoVolumeConfig}
           onAutoVolumeReduced={onAutoVolumeReduced}
+          onQueueReferenceUpdated={onQueueReferenceUpdated}
+          onTrackSelectedByPlayer={onTrackSelectedByPlayer}
         />
       </div>
 

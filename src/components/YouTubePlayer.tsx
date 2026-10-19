@@ -39,6 +39,8 @@ interface YouTubePlayerProps {
   systemStatus?: SystemStatus;
   autoVolumeConfig?: AutoVolumeReducerConfig;
   onAutoVolumeReduced?: (newVolume: number) => void;
+  onQueueReferenceUpdated?: (tracks: Track[]) => void;
+  onTrackSelectedByPlayer?: (track: Track) => void;
 }
 
 declare global {
@@ -63,7 +65,9 @@ const YouTubePlayerComponent: React.FC<YouTubePlayerProps> = ({
   onToggleListening,
   systemStatus = 'idle',
   autoVolumeConfig,
-  onAutoVolumeReduced
+  onAutoVolumeReduced,
+  onQueueReferenceUpdated,
+  onTrackSelectedByPlayer
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const playerRef = useRef<any>(null);
@@ -78,7 +82,9 @@ const YouTubePlayerComponent: React.FC<YouTubePlayerProps> = ({
     opacity,
     onNextTrack,
     isFullscreen,
-    onToggleFullscreen
+    onToggleFullscreen,
+    onQueueReferenceUpdated,
+    onTrackSelectedByPlayer
   });
   latestPropsRef.current = {
     track,
@@ -89,7 +95,9 @@ const YouTubePlayerComponent: React.FC<YouTubePlayerProps> = ({
     opacity,
     onNextTrack,
     isFullscreen,
-    onToggleFullscreen
+    onToggleFullscreen,
+    onQueueReferenceUpdated,
+    onTrackSelectedByPlayer
   };
 
   // Performance and state tracking refs (pure mutable variables that NEVER trigger React renders)
@@ -579,6 +587,39 @@ const YouTubePlayerComponent: React.FC<YouTubePlayerProps> = ({
               isPlaying: true,
               ...(dur > 0 ? { duration: dur } : {})
             });
+
+            // Sincronizar canción activa si el reproductor nativo cambió de video (ej: clic en "Más vídeos" de YouTube)
+            try {
+              const vData = event.target.getVideoData?.();
+              if (vData && vData.video_id && vData.video_id !== latestPropsRef.current.track?.id) {
+                const durVal = playerRef.current?.getDuration?.() || 0;
+                const detectedTrack: Track = {
+                  id: vData.video_id,
+                  title: vData.title || latestPropsRef.current.track?.title || 'Canción',
+                  artist: vData.author || latestPropsRef.current.track?.artist || '',
+                  thumbnail: `https://i.ytimg.com/vi/${vData.video_id}/hqdefault.jpg`,
+                  duration: durVal > 0 ? `${Math.floor(durVal / 60)}:${Math.floor(durVal % 60).toString().padStart(2, '0')}` : '3:45'
+                };
+                lastVideoIdRef.current = vData.video_id;
+                latestPropsRef.current.onTrackSelectedByPlayer?.(detectedTrack);
+              }
+            } catch (_) {}
+
+            // Sincronizar cola de reproducción desde la playlist/mix nativa del reproductor si está disponible
+            try {
+              const pl = event.target.getPlaylist?.();
+              if (Array.isArray(pl) && pl.length > 1) {
+                const curVData = event.target.getVideoData?.();
+                const plTracks: Track[] = pl.map((id: string) => ({
+                  id,
+                  title: id === curVData?.video_id ? (curVData?.title || 'Canción') : 'Canción de la lista',
+                  artist: curVData?.author || '',
+                  thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+                  duration: '3:45'
+                }));
+                latestPropsRef.current.onQueueReferenceUpdated?.(plTracks);
+              }
+            } catch (_) {}
           } else if (event.data === 3) {
             // Buffering
             enforceUserQuality();
@@ -952,6 +993,38 @@ const YouTubePlayerComponent: React.FC<YouTubePlayerProps> = ({
       window.removeEventListener('serchtube:seek-to', handleSeekTo);
       window.removeEventListener('serchtube:reload-player', handleReloadPlayer);
     };
+  }, []);
+
+  // Puente con la extensión de Edge: recibe los videos de "Más vídeos" y cambios de reproducción
+  useEffect(() => {
+    const handleExtensionMessage = (event: MessageEvent) => {
+      const data = event.data;
+      if (!data || typeof data !== 'object') return;
+      if (data.source !== 'yt-autozoom') return;
+
+      // 1. Lista de "Más vídeos" extraída directamente del reproductor nativo
+      if (data.type === 'serchtube-more-videos' && Array.isArray(data.items) && data.items.length > 0) {
+        latestPropsRef.current.onQueueReferenceUpdated?.(data.items);
+      }
+
+      // 2. Notificación de cambio de video dentro de YouTube (ej. clic del usuario en "Más vídeos")
+      if (data.type === 'serchtube-video-changed' && data.videoId) {
+        if (data.videoId !== latestPropsRef.current.track?.id) {
+          const trackFromEvent: Track = {
+            id: data.videoId,
+            title: data.title || latestPropsRef.current.track?.title || 'Canción',
+            artist: data.artist || latestPropsRef.current.track?.artist || '',
+            thumbnail: `https://i.ytimg.com/vi/${data.videoId}/hqdefault.jpg`,
+            duration: '3:45'
+          };
+          lastVideoIdRef.current = data.videoId;
+          latestPropsRef.current.onTrackSelectedByPlayer?.(trackFromEvent);
+        }
+      }
+    };
+
+    window.addEventListener('message', handleExtensionMessage);
+    return () => window.removeEventListener('message', handleExtensionMessage);
   }, []);
 
   // Keyboard Shortcuts for Media Keys

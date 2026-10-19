@@ -450,14 +450,171 @@
     updateButton();
   }
 
+  /* ---------- Integración Nativa con "Más vídeos" y Cola de Reproducción ---------- */
+  let lastReportedVideoId = '';
+  let lastMoreVideosCount = 0;
+
+  function extractMoreVideos() {
+    try {
+      const items = [];
+      const seenIds = new Set();
+      const moviePlayer = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+
+      // 1. Obtener ID del video actual
+      const currentVideoData = (typeof moviePlayer?.getVideoData === 'function') ? moviePlayer.getVideoData() : null;
+      const currentVid = currentVideoData?.video_id || '';
+      if (currentVid) seenIds.add(currentVid);
+
+      // 2. Extraer enlaces nativos de "Más vídeos" / Pause Overlay / Sugerencias de YouTube
+      const selectors = [
+        '.ytp-pause-overlay a',
+        '.ytp-suggestions a',
+        'a.ytp-suggestion',
+        'a.ytp-pause-overlay-link',
+        '.ytp-expand-pause-overlay a',
+        'a[href*="watch?v="]'
+      ];
+      const linkElements = document.querySelectorAll(selectors.join(', '));
+
+      linkElements.forEach(el => {
+        let vid = el.getAttribute('data-vid') || '';
+        const href = el.getAttribute('href') || '';
+        if (!vid && href) {
+          const match = href.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+          if (match) vid = match[1];
+        }
+        if (!vid || seenIds.has(vid)) return;
+
+        const titleEl = el.querySelector('.ytp-suggestion-title, .ytp-pause-overlay-title, [class*="title"]') || el;
+        const authorEl = el.querySelector('.ytp-suggestion-author, [class*="author"], [class*="byline"]');
+        const imgEl = el.querySelector('img');
+
+        let title = (titleEl?.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
+        // Limpiar sufijos como "de Autor" o duraciones
+        title = title.replace(/\s*-\s*\d+:\d+(\s*de\s*.+)?$/i, '').trim();
+
+        const artist = (authorEl?.textContent || '').trim();
+        const thumbnail = imgEl?.src || `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`;
+
+        if (vid) {
+          seenIds.add(vid);
+          items.push({
+            id: vid,
+            title: title || 'Canción sugerida',
+            artist: artist || currentVideoData?.author || '',
+            thumbnail,
+            duration: '3:45'
+          });
+        }
+      });
+
+      // 3. Si YouTube tiene cargada una playlist/mix interna en el player
+      if (typeof moviePlayer?.getPlaylist === 'function') {
+        const pl = moviePlayer.getPlaylist();
+        if (Array.isArray(pl)) {
+          pl.forEach(id => {
+            if (id && !seenIds.has(id)) {
+              seenIds.add(id);
+              items.push({
+                id,
+                title: 'Canción recomendada',
+                artist: currentVideoData?.author || '',
+                thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+                duration: '3:45'
+              });
+            }
+          });
+        }
+      }
+
+      // Si se encontraron recomendaciones o cambiaron, enviar a SerchTube
+      if (items.length > 0 && items.length !== lastMoreVideosCount) {
+        lastMoreVideosCount = items.length;
+        try {
+          window.parent.postMessage({
+            source: SOURCE_OUT,
+            type: 'serchtube-more-videos',
+            videoId: currentVid,
+            items
+          }, '*');
+        } catch (_) {}
+      }
+
+      return items;
+    } catch (err) {
+      return [];
+    }
+  }
+
+  // Vigilante periódico de video activo y cambios en "Más vídeos"
+  setInterval(() => {
+    try {
+      const moviePlayer = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
+      if (typeof moviePlayer?.getVideoData === 'function') {
+        const vData = moviePlayer.getVideoData();
+        const vid = vData?.video_id || '';
+        if (vid && vid !== lastReportedVideoId) {
+          lastReportedVideoId = vid;
+          window.parent.postMessage({
+            source: SOURCE_OUT,
+            type: 'serchtube-video-changed',
+            videoId: vid,
+            title: vData.title || '',
+            artist: vData.author || ''
+          }, '*');
+          lastMoreVideosCount = 0;
+          setTimeout(extractMoreVideos, 1200);
+        }
+      }
+      // Escanear "Más vídeos" si hay elementos en el DOM
+      extractMoreVideos();
+    } catch (_) {}
+  }, 1800);
+
   window.addEventListener('message', (event) => {
     const d = event.data;
     if (!d || typeof d !== 'object' || d.source !== SOURCE_IN || d.type !== BRIDGE_IN) return;
     const reply = () => bridgeReply(event.source);
+    const moviePlayer = document.getElementById('movie_player') || document.querySelector('.html5-video-player');
 
     switch (d.action) {
       case 'status':
         reply();
+        extractMoreVideos();
+        return;
+
+      case 'get-more-videos':
+        extractMoreVideos();
+        return;
+
+      case 'next-video':
+        try {
+          if (typeof moviePlayer?.nextVideo === 'function') {
+            moviePlayer.nextVideo();
+          } else {
+            const nextBtn = document.querySelector('.ytp-next-button');
+            if (nextBtn) nextBtn.click();
+          }
+        } catch (_) {}
+        return;
+
+      case 'previous-video':
+        try {
+          if (typeof moviePlayer?.previousVideo === 'function') {
+            moviePlayer.previousVideo();
+          } else {
+            const prevBtn = document.querySelector('.ytp-prev-button');
+            if (prevBtn) prevBtn.click();
+          }
+        } catch (_) {}
+        return;
+
+      case 'play-video-id':
+        if (d.videoId && typeof moviePlayer?.loadVideoById === 'function') {
+          try {
+            moviePlayer.loadVideoById(d.videoId);
+          } catch (_) {}
+        }
         return;
 
       case 'set-active':
@@ -503,5 +660,8 @@
   });
 
   // Aviso espontaneo al abrirse, para que SerchTube sepa que la extension esta viva.
-  try { window.parent.postMessage(bridgeStatus(), '*'); } catch (_) {}
+  try {
+    window.parent.postMessage(bridgeStatus(), '*');
+    setTimeout(extractMoreVideos, 1500);
+  } catch (_) {}
 })();

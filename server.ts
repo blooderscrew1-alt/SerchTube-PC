@@ -1227,6 +1227,14 @@ function parseVoiceCommandLocally(transcript: string, personality: string, curre
     }
   }
 
+  // Instant Microphone Opening commands ("abrir micrófono", "abre el micrófono", "activa el micrófono", "escuchar")
+  if (/(?:abrir|abre|activa|activar|enciende|encender|pon|conecta|conectar)\s+(?:el\s+)?(?:micr[oó]fono|micro)\b/i.test(text) || /^(?:micr[oó]fono|micro|escucha|esc[uú]chame|atento)$/i.test(text)) {
+    return {
+      action: 'open_mic',
+      speechFeedback: '¡Micrófono abierto! Te escucho.'
+    };
+  }
+
   // Fullscreen commands ("pantalla completa", "fullscreen", "maximizar", "salir de pantalla completa")
   if (/(pantalla completa|fullscreen|pantalla entera|maximizar pantalla)/i.test(text)) {
     if (/(salir|quitar|cerrar|desactivar|minimizar|normal)/i.test(text)) {

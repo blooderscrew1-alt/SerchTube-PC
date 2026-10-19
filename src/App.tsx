@@ -649,6 +649,60 @@ export default function App() {
     SpeechService.getInstance().resetSession();
   }, []);
 
+  // ⚡ Apertura Instantánea del Micrófono (en milisegundos):
+  // Atiende en milisegundos órdenes de abrir micrófono y detección de palabra clave,
+  // reproduciendo el sonido de confirmación en <1ms y abriendo la escucha de inmediato.
+  const openMicrophoneInstantly = useCallback((source: 'host' | 'node' = 'host', initialCommand?: string) => {
+    // 1. Salir del salvapantallas de inmediato
+    setIsScreensaverActive(false);
+
+    // 2. Establecer banderas de escucha activa
+    setIsAwaitingCommandAfterWakeWord(true);
+    isAwaitingCommandRef.current = true;
+    SpeechService.getInstance().setAwaitingCommand(true);
+    setMicActivationSource(source);
+    setSystemStatus('listening');
+    setIsListening(true);
+    setLastTranscript(initialCommand || '');
+    setAssistantResponse('🎙️ Micrófono abierto... Di tu orden o canción');
+
+    // 3. Ducking acústico inmediato para hablar suavemente
+    if (playerStateRef.current.isPlaying) {
+      AudioEngine.getInstance().startDucking(150);
+    }
+
+    // 4. 🔔 Sonido de notificación en milisegundos (Web Audio API AudioBuffer sin lag)
+    const nowBeep = Date.now();
+    if (nowBeep - lastWakeBeepTimeRef.current > 350) {
+      lastWakeBeepTimeRef.current = nowBeep;
+      AudioEngine.getInstance().playWakeSound(speechConfigRef.current?.wakeSound || 'random');
+    }
+
+    // 5. Cancelar cualquier saludo por voz diferido
+    if (pendingGreetingTimerRef.current) {
+      clearTimeout(pendingGreetingTimerRef.current);
+      pendingGreetingTimerRef.current = null;
+    }
+
+    // 6. Asegurar reconocimiento de voz activo
+    SpeechService.getInstance().startListening();
+
+    // 7. Ventana estricta de 5 segundos de espera para la orden
+    if (activeListeningTimerRef.current) clearTimeout(activeListeningTimerRef.current);
+    activeListeningTimerRef.current = setTimeout(() => {
+      setIsAwaitingCommandAfterWakeWord(false);
+      isAwaitingCommandRef.current = false;
+      setSystemStatus('idle');
+      setIsListening(false);
+      setAssistantResponse('⏱️ Petición cancelada por inactividad (5s)');
+      AudioEngine.getInstance().stopDucking();
+      SpeechService.getInstance().resetSession();
+      setTimeout(() => {
+        setAssistantResponse(prev => (prev && prev.includes('inactividad') ? null : prev));
+      }, 3000);
+    }, 5000);
+  }, []);
+
   // 5b. Auto Shutdown PC / System Timer State
   const [autoShutdownConfig, setAutoShutdownConfig] = useState<AutoShutdownConfig>(() => {
     try {
@@ -1342,8 +1396,9 @@ export default function App() {
       }
     }
 
-    // Audio Engine Ducking callback
+    // Audio Engine Ducking callback & ultra-fast wake sound preloading
     const audioEngine = AudioEngine.getInstance();
+    audioEngine.preloadWakeSounds();
     audioEngine.setDuckingCallback((isDucked) => {
       setPlayerState(prev => ({ ...prev, isDucked }));
     });
@@ -1372,24 +1427,27 @@ export default function App() {
         const traePalabraClave = !!parsed?.hasWakeWord;
 
         if (wakeEnabled && !isAwaiting && !isDirectActive && traePalabraClave && parsed) {
-          // Salir de pantalla de bloqueo y activar de inmediato el orbe con animación de micrófono
-          setIsScreensaverActive(false);
-          setIsAwaitingCommandAfterWakeWord(true);
-          isAwaitingCommandRef.current = true;
-          SpeechService.getInstance().setAwaitingCommand(true);
-          setMicActivationSource('host');
-          setSystemStatus('listening');
-          setIsListening(true);
-          setLastTranscript(parsed.isWakeWordOnly ? '' : parsed.commandText);
-          // 🎚️ Atenuar la música YA (ruta interina)
-          if (playerStateRef.current.isPlaying) {
-            AudioEngine.getInstance().startDucking(150);
-          }
-          // 🔔 Sonido de notificación al abrir el micrófono (sin saludos hablados por TTS)
-          const nowBeep = Date.now();
-          if (nowBeep - lastWakeBeepTimeRef.current > 1500) {
-            lastWakeBeepTimeRef.current = nowBeep;
-            AudioEngine.getInstance().playWakeSound(speechConfig.wakeSound || 'random');
+          if (parsed.isWakeWordOnly) {
+            // Apertura instantánea en milisegundos tras escuchar la palabra clave u orden de abrir micro
+            openMicrophoneInstantly('host');
+          } else {
+            // Palabra clave acompañada directamente de una orden dictada ("música reproduce eminem")
+            setIsScreensaverActive(false);
+            setIsAwaitingCommandAfterWakeWord(true);
+            isAwaitingCommandRef.current = true;
+            SpeechService.getInstance().setAwaitingCommand(true);
+            setMicActivationSource('host');
+            setSystemStatus('listening');
+            setIsListening(true);
+            setLastTranscript(parsed.commandText);
+            if (playerStateRef.current.isPlaying) {
+              AudioEngine.getInstance().startDucking(150);
+            }
+            const nowBeep = Date.now();
+            if (nowBeep - lastWakeBeepTimeRef.current > 350) {
+              lastWakeBeepTimeRef.current = nowBeep;
+              AudioEngine.getInstance().playWakeSound(speechConfig.wakeSound || 'random');
+            }
           }
         }
 
@@ -1519,48 +1577,8 @@ export default function App() {
           if (parsed.hasWakeWord) {
             // Wake word detected in this phrase!
             if (parsed.isWakeWordOnly) {
-              // User just said "Música" or "Música!" -> Exit screensaver and activate listening
-              setIsScreensaverActive(false);
-              setIsAwaitingCommandAfterWakeWord(true);
-              isAwaitingCommandRef.current = true;
-              SpeechService.getInstance().setAwaitingCommand(true);
-              setMicActivationSource('host');
-              setSystemStatus('listening');
-              setIsListening(true);
-              setAssistantResponse(`⚡ ¡"${wakeWordStr}" detectada! Micrófono abierto (5s)...`);
-
-              // Atenuar música de inmediato para que el usuario pueda hablar suave sin gritar sobre la música
-              if (playerStateRef.current.isPlaying) {
-                AudioEngine.getInstance().startDucking(150);
-              }
-
-              // 🔔 Sonido de notificación al abrir el micrófono (SIN saludos ni respuestas por voz TTS)
-              const nowBeep = Date.now();
-              if (nowBeep - lastWakeBeepTimeRef.current > 1500) {
-                lastWakeBeepTimeRef.current = nowBeep;
-                AudioEngine.getInstance().playWakeSound(speechConfig.wakeSound || 'random');
-              }
-
-              // Cancelar cualquier saludo por voz para garantizar CERO respuestas por voz TTS
-              if (pendingGreetingTimerRef.current) {
-                clearTimeout(pendingGreetingTimerRef.current);
-                pendingGreetingTimerRef.current = null;
-              }
-
-              // Establish strict 5-second frame to capture request or auto-cancel on inactivity
-              if (activeListeningTimerRef.current) clearTimeout(activeListeningTimerRef.current);
-              activeListeningTimerRef.current = setTimeout(() => {
-                setIsAwaitingCommandAfterWakeWord(false);
-                isAwaitingCommandRef.current = false;
-                setSystemStatus('idle');
-                setIsListening(false);
-                setAssistantResponse('⏱️ Petición cancelada por inactividad (5s)');
-                AudioEngine.getInstance().stopDucking();
-                SpeechService.getInstance().resetSession();
-                setTimeout(() => {
-                  setAssistantResponse(prev => (prev && prev.includes('inactividad') ? null : prev));
-                }, 3000);
-              }, 5000);
+              // Apertura instantánea en milisegundos tras escuchar la palabra clave u orden de abrir micro
+              openMicrophoneInstantly('host');
             } else {
               // User said "Música, reproduce Maná" or "Música siguiente" -> Immediate execution
               setIsScreensaverActive(false);
@@ -2560,22 +2578,27 @@ export default function App() {
       });
     }
 
-    const isVolumeCmd = isVolumeAction || hasVolumeWord || action.startsWith('volume') || action === 'mute' || action === 'unmute';
+    const isVolumeCmd = isVolumeAction || hasVolumeWord || action.startsWith('volume') || action === 'mute' || action === 'unmute' || action === 'open_mic' || action === 'activate_mic';
 
     if (isVolumeCmd) {
-      // User request: No TTS voice confirmation for volume commands, use a discreet audio beep
-      const beepType = action === 'volume_up' ? 'up' : (action === 'volume_down' ? 'down' : 'neutral');
-      AudioEngine.getInstance().playBeep(beepType);
-      const volLabel = action === 'volume_up'
-        ? 'Volumen +'
-        : (action === 'volume_down'
-            ? 'Volumen -'
-            : (action === 'mute'
-                ? 'Silenciado'
-                : (action === 'unmute'
-                    ? 'Audio activado'
-                    : `Volumen: ${volumeVal ?? playerStateRef.current.volume}/15`)));
-      setAssistantResponse(fromNode ? `[${fromNode}] ${volLabel}` : volLabel);
+      if (action === 'open_mic' || action === 'activate_mic') {
+        // En órdenes de abrir micrófono no se habla por TTS para dejar el micrófono limpio y atento
+        setAssistantResponse('🎙️ Micrófono abierto... Di tu orden');
+      } else {
+        // User request: No TTS voice confirmation for volume commands, use a discreet audio beep
+        const beepType = action === 'volume_up' ? 'up' : (action === 'volume_down' ? 'down' : 'neutral');
+        AudioEngine.getInstance().playBeep(beepType);
+        const volLabel = action === 'volume_up'
+          ? 'Volumen +'
+          : (action === 'volume_down'
+              ? 'Volumen -'
+              : (action === 'mute'
+                  ? 'Silenciado'
+                  : (action === 'unmute'
+                      ? 'Audio activado'
+                      : `Volumen: ${volumeVal ?? playerStateRef.current.volume}/15`)));
+        setAssistantResponse(fromNode ? `[${fromNode}] ${volLabel}` : volLabel);
+      }
     } else {
       setAssistantResponse(fromNode ? `[${fromNode}] ${feedback}` : feedback);
       // Speak audio feedback with TTS only for non-volume commands
@@ -2588,6 +2611,12 @@ export default function App() {
     }
 
     switch (action) {
+      case 'open_mic':
+      case 'activate_mic': {
+        openMicrophoneInstantly(fromNode ? 'node' : 'host');
+        break;
+      }
+
       case 'play': {
         // Absolute safeguard against pause commands or echoes being treated as songs
         if (/(?:pausa|pausar|pausado|pausando|detener|detén|deten|parar|para|alto|stop|en pausa|reproducci[oó]n en pausa|aqu[ií] te espero|pausa lista)/i.test(query)) {
@@ -3338,35 +3367,10 @@ export default function App() {
 
     switch (evt.event) {
       case 'ACTIVATE_MIC': {
-        // 🎙️ Un nodo satélite detectó la palabra clave y solo pide encender el
-        // micrófono del host: NO se procesa ningún comando y NO se habla por voz
-        // (así los nodos no capturan la respuesta del asistente).
-        setIsScreensaverActive(false);
-        setIsAwaitingCommandAfterWakeWord(true);
-        isAwaitingCommandRef.current = true;
-        setMicActivationSource('node');
-        setSystemStatus('listening');
-        setIsListening(true);
-        setLastTranscript('🎙️ Micrófono activado por estación externa');
-        // Asegurar que el reconocimiento esté corriendo (por si estaba detenido)
-        SpeechService.getInstance().startListening();
-        // Atenuar la música para que el usuario pueda hablar suave
-        if (playerStateRef.current.isPlaying) {
-          AudioEngine.getInstance().startDucking(150);
-        }
-        // Ventana de inactividad: si nadie da una orden, cerrar solo
-        if (activeListeningTimerRef.current) clearTimeout(activeListeningTimerRef.current);
-        activeListeningTimerRef.current = setTimeout(() => {
-          setIsAwaitingCommandAfterWakeWord(false);
-          isAwaitingCommandRef.current = false;
-          setSystemStatus('idle');
-          setIsListening(false);
-          setAssistantResponse('⏱️ Micrófono abierto por estación externa cerrado (sin orden)');
-          AudioEngine.getInstance().stopDucking();
-          setTimeout(() => {
-            setAssistantResponse(prev => (prev && prev.includes('estación externa') ? null : prev));
-          }, 3000);
-        }, 8000);
+        // 🎙️ Un nodo satélite o móvil QR envió la orden de abrir el micrófono del host:
+        // Apertura inmediata en milisegundos con sonido de confirmación instantáneo
+        openMicrophoneInstantly('node');
+        setAssistantResponse('🎙️ Micrófono activado por estación externa... Di tu orden');
         break;
       }
       case 'LOAD_VIDEO': {
@@ -3846,6 +3850,101 @@ export default function App() {
     }, 2500);
   }, []);
 
+  // Sincronización oficial con "Más vídeos" del reproductor nativo de YouTube
+  const handleQueueReferenceUpdated = useCallback((nativeVideos: Track[]) => {
+    if (!nativeVideos || !Array.isArray(nativeVideos) || nativeVideos.length === 0) return;
+
+    setPlaylistQueue(prevQueue => {
+      const currentTrack = playerStateRef.current.currentTrack || prevQueue[playlistIndexRef.current];
+      const seenIds = new Set<string>();
+      const seenKeys = new Set<string>();
+
+      if (currentTrack && currentTrack.id) {
+        seenIds.add(currentTrack.id);
+        const k = normalizeSongKeyForDedup(currentTrack.title);
+        const pk = extractSongPartForDedup(currentTrack.title);
+        if (k) seenKeys.add(k);
+        if (pk) seenKeys.add(pk);
+      }
+
+      // Preservar canciones anteriores en la cola para permitir volver atrás
+      const prevHistory = prevQueue.slice(0, playlistIndexRef.current);
+      prevHistory.forEach(t => {
+        if (t.id) seenIds.add(t.id);
+        const k = normalizeSongKeyForDedup(t.title);
+        const pk = extractSongPartForDedup(t.title);
+        if (k) seenKeys.add(k);
+        if (pk) seenKeys.add(pk);
+      });
+
+      // Filtrar y agregar las recomendaciones de "Más vídeos"
+      const freshTracks: Track[] = [];
+      for (const item of nativeVideos) {
+        if (!item || !item.id || seenIds.has(item.id)) continue;
+        if (currentTrack && areSameSongClient(item.title, currentTrack.title)) continue;
+        const k = normalizeSongKeyForDedup(item.title);
+        const pk = extractSongPartForDedup(item.title);
+        if (k && seenKeys.has(k)) continue;
+        if (pk && seenKeys.has(pk)) continue;
+
+        seenIds.add(item.id);
+        if (k) seenKeys.add(k);
+        if (pk) seenKeys.add(pk);
+        freshTracks.push({
+          ...item,
+          thumbnail: item.thumbnail || `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
+          duration: item.duration || '3:45'
+        });
+      }
+
+      if (freshTracks.length === 0) return prevQueue;
+
+      // La cola queda compuesta por: [historial previo, canción actual, ...videos de "Más vídeos"]
+      const newQueue = currentTrack
+        ? [...prevHistory, currentTrack, ...freshTracks]
+        : [...prevHistory, ...freshTracks];
+
+      const newIndex = prevHistory.length;
+      setPlaylistIndex(newIndex);
+      return newQueue;
+    });
+  }, []);
+
+  // Manejador cuando el usuario hace clic directamente en "Más vídeos" dentro del reproductor de YouTube
+  const handleTrackSelectedByPlayer = useCallback((newTrack: Track) => {
+    if (!newTrack || !newTrack.id) return;
+    if (newTrack.id === playerStateRef.current.currentTrack?.id) return;
+
+    setPlayerState(prev => ({
+      ...prev,
+      currentTrack: newTrack,
+      isPlaying: true,
+      currentTime: 0
+    }));
+
+    // Asegurar que la nueva pista esté registrada en la cola
+    setPlaylistQueue(prevQueue => {
+      const existingIdx = prevQueue.findIndex(t => t.id === newTrack.id);
+      if (existingIdx !== -1) {
+        setPlaylistIndex(existingIdx);
+        return prevQueue;
+      } else {
+        const nextIdx = playlistIndexRef.current + 1;
+        const updated = [...prevQueue.slice(0, nextIdx), newTrack, ...prevQueue.slice(nextIdx)];
+        setPlaylistIndex(nextIdx);
+        return updated;
+      }
+    });
+
+    enforcePostPlaybackMicSafety();
+    setTimeout(() => {
+      NodeSyncService.getInstance().broadcastMasterState(
+        { ...playerStateRef.current, currentTrack: newTrack, isPlaying: true, currentTime: 0 },
+        getUpcomingQueue()
+      );
+    }, 50);
+  }, [getUpcomingQueue]);
+
   // Rule: Non-stop continuous playback handler
   const handleTrackEnded = () => {
     if (playerState.repeatMode === 'one') {
@@ -3864,46 +3963,31 @@ export default function App() {
 
   const handleToggleListening = async () => {
     const speech = SpeechService.getInstance();
-    if (isListening && isDirectMicActiveRef.current) {
+    if (isListening && (isDirectMicActiveRef.current || isAwaitingCommandRef.current)) {
       speech.stopListening();
       setIsListening(false);
       setIsDirectMicActive(false);
       isDirectMicActiveRef.current = false;
+      setIsAwaitingCommandAfterWakeWord(false);
+      isAwaitingCommandRef.current = false;
+      SpeechService.getInstance().setAwaitingCommand(false);
       setSystemStatus('idle');
+      AudioEngine.getInstance().stopDucking();
       if (nodeRole === 'satellite') {
         NodeSyncService.getInstance().broadcastMicEvent(false);
       }
     } else {
-      try {
-        await speech.requestMicPermission();
-      } catch (_) {}
-
-      AudioEngine.getInstance().playBeep('up');
-      speech.startListening();
-      setIsListening(true);
+      // ⚡ Apertura instantánea en 0ms: feedback auditivo inmediato y escucha activa
+      openMicrophoneInstantly('host');
       setIsDirectMicActive(true);
-      setMicActivationSource('host');
       isDirectMicActiveRef.current = true;
-      setSystemStatus('listening');
-      setAssistantResponse('🎙️ Escuchando orden... (Di tu canción o comando)');
 
       if (nodeRole === 'satellite') {
         NodeSyncService.getInstance().broadcastMicEvent(true);
       }
 
-      if (activeListeningTimerRef.current) clearTimeout(activeListeningTimerRef.current);
-      activeListeningTimerRef.current = setTimeout(() => {
-        setIsDirectMicActive(false);
-        isDirectMicActiveRef.current = false;
-        setIsAwaitingCommandAfterWakeWord(false);
-        setAssistantResponse('⏱️ Micrófono cerrado (sin palabras)');
-        if (nodeRole === 'satellite') {
-          NodeSyncService.getInstance().broadcastMicEvent(false);
-        }
-        setTimeout(() => {
-          setAssistantResponse(prev => (prev && prev.includes('cerrado') ? '' : prev));
-        }, 3000);
-      }, 6000);
+      // Solicitar permisos en segundo plano de forma no bloqueante si hiciera falta
+      speech.requestMicPermission().catch(() => {});
     }
   };
 
@@ -4151,6 +4235,8 @@ export default function App() {
         playlistIndex={playlistIndex}
         onSelectTrackFromQueue={handleSelectTrackFromQueue}
         onClearPlaylistQueue={handleClearPlaylistQueue}
+        onQueueReferenceUpdated={handleQueueReferenceUpdated}
+        onTrackSelectedByPlayer={handleTrackSelectedByPlayer}
         onOpenGoogleHome={() => setIsGoogleHomeOpen(true)}
       />
 
