@@ -1130,6 +1130,24 @@ export class CommandDispatcher {
       resolved.intent === 'MUTE' ||
       resolved.intent === 'UNMUTE';
 
+    // 🎙️ master_mic_active: La PC Host notificó que abrió su micrófono (localmente o por voz)
+    if (
+      payload.action === 'master_mic_active' ||
+      payload.type === 'master_mic_active' ||
+      payload.payload?.action === 'master_mic_active'
+    ) {
+      console.log(`[CommandDispatcher] 🎙️ Host Master (${room}) activó su micrófono localmente. Registrando deduplicación multi-nodo.`);
+      this.recentCommands.push({
+        intent: 'UNKNOWN',
+        originalAction: 'activate_mic',
+        nodeId: 'master-host',
+        nodeName: 'PC Master Host',
+        room,
+        timestamp: now
+      } as RecentSatelliteCommand);
+      return;
+    }
+
     // 🎙️ ACTIVATE_MIC: un nodo satélite detectó la palabra clave y solo pide
     // encender el micrófono del host. Va ANTES del árbitro de turnos para que
     // un comando musical reciente no lo descarte; lleva deduplicación propia.

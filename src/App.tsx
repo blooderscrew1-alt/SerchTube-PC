@@ -587,6 +587,8 @@ export default function App() {
   const pendingGreetingTimerRef = useRef<any>(null);
   // Timestamp del último sonido de identificación de micrófono abierto (para no duplicar tono)
   const lastWakeBeepTimeRef = useRef<number>(0);
+  // 🛡️ Timestamp de última activación de micrófono para deduplicación estricta multi-dispositivo (PC + satélites)
+  const lastMicActivationTimeRef = useRef<number>(0);
 
   // Sincronizar el "micrófono caliente" con el servicio de voz: mientras se espera un
   // comando tras la palabra clave, la escucha no se bloquea por el saludo del TTS
@@ -651,8 +653,27 @@ export default function App() {
 
   // ⚡ Apertura Instantánea del Micrófono (en milisegundos):
   // Atiende en milisegundos órdenes de abrir micrófono y detección de palabra clave,
-  // reproduciendo el sonido de confirmación en <1ms y abriendo la escucha de inmediato.
-  const openMicrophoneInstantly = useCallback((source: 'host' | 'node' = 'host', initialCommand?: string) => {
+  // con filtro antirrepetición y deduplicación concurrente para no reiniciar el micro ni recortar frases.
+  const openMicrophoneInstantly = useCallback((source: 'host' | 'node' = 'host', initialCommand?: string, force?: boolean) => {
+    const now = Date.now();
+    const isAlreadyAwaiting = isAwaitingCommandRef.current;
+    const isDirectActive = isDirectMicActiveRef.current;
+    const elapsedSinceLastActivation = now - lastMicActivationTimeRef.current;
+
+    // 🛡️ FILTRO ESTRICTO MULTI-DISPOSITIVO (PC + Nodos Satélites / Móviles QR):
+    // Si el micrófono ya está activo esperando una orden del usuario, o si se activó hace menos de 3.5 segundos
+    // (por la PC o por cualquier nodo satélite que escuchó la palabra clave concurrentemente en la sala),
+    // DESCARTAR de raíz cualquier petición redundante. Esto impide que múltiples peticiones reinicien el
+    // SpeechRecognition, borren la transcripción ya capturada o recorten el inicio de la frase dictada.
+    if (!force && (isAlreadyAwaiting || isDirectActive || elapsedSinceLastActivation < 3500)) {
+      console.log(`[SerchTube Mic Filter] 🛡️ Activación duplicada descartada (${source}). Ya escuchando (hace ${elapsedSinceLastActivation}ms).`);
+      return false;
+    }
+
+    // Bloquear inmediatamente de forma atómica antes de cualquier otra operación
+    lastMicActivationTimeRef.current = now;
+    isAwaitingCommandRef.current = true;
+
     // 1. Salir del salvapantallas de inmediato
     setIsScreensaverActive(false);
 
@@ -664,7 +685,7 @@ export default function App() {
     setSystemStatus('listening');
     setIsListening(true);
     setLastTranscript(initialCommand || '');
-    setAssistantResponse('🎙️ Micrófono abierto... Di tu orden o canción');
+    setAssistantResponse(source === 'node' ? '🎙️ Micrófono activado por satélite... Di tu orden' : '🎙️ Micrófono abierto... Di tu orden o canción');
 
     // 3. Ducking acústico inmediato para hablar suavemente
     if (playerStateRef.current.isPlaying) {
@@ -673,7 +694,7 @@ export default function App() {
 
     // 4. 🔔 Sonido de notificación en milisegundos (Web Audio API AudioBuffer sin lag)
     const nowBeep = Date.now();
-    if (nowBeep - lastWakeBeepTimeRef.current > 350) {
+    if (nowBeep - lastWakeBeepTimeRef.current > 600) {
       lastWakeBeepTimeRef.current = nowBeep;
       AudioEngine.getInstance().playWakeSound(speechConfigRef.current?.wakeSound || 'random');
     }
@@ -687,7 +708,12 @@ export default function App() {
     // 6. Asegurar reconocimiento de voz activo
     SpeechService.getInstance().startListening();
 
-    // 7. Ventana estricta de 5 segundos de espera para la orden
+    // 7. Notificar a la red/servidor que el Host Master ya activó su micrófono
+    try {
+      NodeSyncService.getInstance().broadcastDirectEvent({ action: 'master_mic_active', timestamp: now });
+    } catch (_) {}
+
+    // 8. Ventana estricta de 5 segundos de espera para la orden
     if (activeListeningTimerRef.current) clearTimeout(activeListeningTimerRef.current);
     activeListeningTimerRef.current = setTimeout(() => {
       setIsAwaitingCommandAfterWakeWord(false);
@@ -701,6 +727,8 @@ export default function App() {
         setAssistantResponse(prev => (prev && prev.includes('inactividad') ? null : prev));
       }, 3000);
     }, 5000);
+
+    return true;
   }, []);
 
   // 5b. Auto Shutdown PC / System Timer State
@@ -1432,6 +1460,7 @@ export default function App() {
             openMicrophoneInstantly('host');
           } else {
             // Palabra clave acompañada directamente de una orden dictada ("música reproduce eminem")
+            lastMicActivationTimeRef.current = Date.now();
             setIsScreensaverActive(false);
             setIsAwaitingCommandAfterWakeWord(true);
             isAwaitingCommandRef.current = true;
@@ -1444,7 +1473,7 @@ export default function App() {
               AudioEngine.getInstance().startDucking(150);
             }
             const nowBeep = Date.now();
-            if (nowBeep - lastWakeBeepTimeRef.current > 350) {
+            if (nowBeep - lastWakeBeepTimeRef.current > 600) {
               lastWakeBeepTimeRef.current = nowBeep;
               AudioEngine.getInstance().playWakeSound(speechConfig.wakeSound || 'random');
             }
@@ -1577,8 +1606,10 @@ export default function App() {
           if (parsed.hasWakeWord) {
             // Wake word detected in this phrase!
             if (parsed.isWakeWordOnly) {
-              // Apertura instantánea en milisegundos tras escuchar la palabra clave u orden de abrir micro
-              openMicrophoneInstantly('host');
+              // Si el micrófono ya está activo o en espera (abierto en interim), no reabrir ni limpiar transcripción
+              if (!isAwaitingCommandRef.current && !isDirectMicActiveRef.current) {
+                openMicrophoneInstantly('host');
+              }
             } else {
               // User said "Música, reproduce Maná" or "Música siguiente" -> Immediate execution
               setIsScreensaverActive(false);
@@ -3368,9 +3399,24 @@ export default function App() {
     switch (evt.event) {
       case 'ACTIVATE_MIC': {
         // 🎙️ Un nodo satélite o móvil QR envió la orden de abrir el micrófono del host:
-        // Apertura inmediata en milisegundos con sonido de confirmación instantáneo
+        // Filtro estricto: Si la PC Master ya activó su micrófono o está en ventana de escucha (<3.5s),
+        // descartar para no reiniciar SpeechRecognition ni recortar las palabras que el usuario ya está pronunciando.
+        const nowAct = Date.now();
+        const elapsed = nowAct - lastMicActivationTimeRef.current;
+        if (isAwaitingCommandRef.current || isDirectMicActiveRef.current || elapsed < 3500) {
+          console.log(`[SerchTube Master] 🛡️ ACTIVATE_MIC de nodo "${fromNode}" descartado: el micrófono ya está activo o en ventana de deduplicación (${elapsed}ms < 3500ms).`);
+          break;
+        }
+        // Bloquear inmediatamente de forma atómica
+        lastMicActivationTimeRef.current = nowAct;
+        isAwaitingCommandRef.current = true;
         openMicrophoneInstantly('node');
-        setAssistantResponse('🎙️ Micrófono activado por estación externa... Di tu orden');
+        break;
+      }
+      case 'MASTER_MIC_ACTIVE':
+      case 'master_mic_active': {
+        lastMicActivationTimeRef.current = Date.now();
+        isAwaitingCommandRef.current = true;
         break;
       }
       case 'LOAD_VIDEO': {
@@ -3978,7 +4024,7 @@ export default function App() {
       }
     } else {
       // ⚡ Apertura instantánea en 0ms: feedback auditivo inmediato y escucha activa
-      openMicrophoneInstantly('host');
+      openMicrophoneInstantly('host', '', true);
       setIsDirectMicActive(true);
       isDirectMicActiveRef.current = true;
 
