@@ -43,8 +43,13 @@ export interface SpeechConfig {
   wakeWord?: string;
   satelliteMicOnly?: boolean;
   micFocusBoost?: boolean;
-  postPlaybackCooldownMs?: number;
   audioInputDeviceId?: string; // ID del dispositivo de micrófono de entrada seleccionado
+  wakeSound?: string;
+  postPlaybackCooldownMs?: number;
+  /** Activar apertura retrasada del micrófono con cuenta regresiva en el orbe */
+  delayedMicActivationEnabled?: boolean;
+  /** Segundos personalizados de cuenta regresiva (ej: 1, 2, 3, 4, 5). Predeterminado: 3s */
+  delayedMicSeconds?: number;
 }
 
 /**

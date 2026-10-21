@@ -98,9 +98,16 @@ interface OledDrivingDashboardProps {
   onPlayerStateChange: (updates: Partial<PlayerState>) => void;
   videoOpacity?: number;
   onVideoOpacityChange?: (opacity: number) => void;
-  satelliteCommandNotification?: { nodeName: string; text?: string } | null;
-  wakeWordInfo?: { enabled: boolean; wakeWord: string; isAwaitingCommand: boolean };
-  onSeek?: (time: number) => void;
+  wakeWordInfo?: {
+    enabled: boolean;
+    wakeWord: string;
+    isAwaitingCommand: boolean;
+    micSource?: 'host' | 'node';
+    isCountdownActive?: boolean;
+    countdownRemaining?: number;
+    countdownTotal?: number;
+    countdownPhase?: 'ready' | 'counting' | 'speak_now';
+  };
   onToggleScreensaver?: () => void;
   onToggleWakeWord?: () => void;
   autoVolumeConfig?: AutoVolumeReducerConfig;

@@ -1723,6 +1723,95 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
                   </button>
                 </div>
 
+                {/* Section: Apertura Retrasada del Micrófono (Cuenta Regresiva en Pantalla / Orbe) */}
+                <div className="pt-2 border-t border-white/10 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+                        <Clock size={14} />
+                      </div>
+                      <div>
+                        <div className="text-xs font-semibold text-white flex items-center gap-2">
+                          <span>Apertura Retrasada del Micrófono (Cuenta Regresiva)</span>
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-mono border font-bold ${
+                            speechConfig.delayedMicActivationEnabled
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                              : 'bg-white/10 text-gray-400 border-white/10'
+                          }`}>
+                            {speechConfig.delayedMicActivationEnabled ? `${speechConfig.delayedMicSeconds || 3}s ACTIVO` : 'DESACTIVADO (0ms)'}
+                          </span>
+                        </div>
+                        <div className="text-[11px] text-gray-400">
+                          Al decir la palabra clave (ej: &ldquo;{speechConfig.wakeWord || 'música'}&rdquo;), el orbe muestra un conteo regresivo (&iquest;Listo? 3, 2, 1... &iexcl;Habla ahora!) antes de empezar a escuchar, d&aacute;ndote tiempo para formular tu orden o canci&oacute;n.
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => onUpdateSpeechConfig({ delayedMicActivationEnabled: !speechConfig.delayedMicActivationEnabled })}
+                      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors cursor-pointer ${
+                        speechConfig.delayedMicActivationEnabled ? 'bg-amber-500' : 'bg-white/20'
+                      }`}
+                    >
+                      <span
+                        className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition-transform ${
+                          speechConfig.delayedMicActivationEnabled ? 'translate-x-4' : 'translate-x-1'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {speechConfig.delayedMicActivationEnabled && (
+                    <div className="p-3 rounded-xl bg-black/60 border border-amber-500/30 space-y-2.5 animate-fadeIn">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-gray-300 flex items-center gap-1.5">
+                          <span>Tiempo de espera antes de escuchar:</span>
+                          <span className="text-amber-400 font-mono font-bold">{speechConfig.delayedMicSeconds || 3} segundos</span>
+                        </span>
+                        <span className="text-[10px] text-gray-400 font-mono">Personalizable</span>
+                      </div>
+
+                      {/* Segundos buttons 1s, 2s, 3s, 4s, 5s */}
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {[
+                          { sec: 1, label: '1s', note: 'Rápido' },
+                          { sec: 2, label: '2s', note: 'Corto' },
+                          { sec: 3, label: '3s', note: 'Recomendado' },
+                          { sec: 4, label: '4s', note: 'Pausado' },
+                          { sec: 5, label: '5s', note: 'Tranquilo' }
+                        ].map((item) => {
+                          const currentSec = speechConfig.delayedMicSeconds || 3;
+                          const isSelected = currentSec === item.sec;
+                          return (
+                            <button
+                              key={item.sec}
+                              type="button"
+                              onClick={() => onUpdateSpeechConfig({ delayedMicSeconds: item.sec })}
+                              className={`py-2 px-1.5 rounded-lg text-center border transition-all cursor-pointer flex flex-col items-center justify-center ${
+                                isSelected
+                                  ? 'bg-amber-500 text-black border-amber-400 font-bold shadow-[0_0_12px_rgba(245,158,11,0.4)]'
+                                  : 'bg-white/5 border-white/10 text-gray-300 hover:text-white hover:bg-white/10'
+                              }`}
+                            >
+                              <span className="text-xs font-mono font-bold leading-none">{item.label}</span>
+                              <span className={`text-[9px] leading-tight mt-0.5 ${isSelected ? 'text-black/80 font-semibold' : 'text-gray-400'}`}>
+                                {item.note}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
+                      <div className="text-[10px] text-amber-300/80 bg-amber-950/30 border border-amber-500/20 rounded-lg p-2 flex items-start gap-1.5">
+                        <Sparkles size={12} className="text-amber-400 shrink-0 mt-0.5" />
+                        <span>
+                          <strong>Secuencia en pantalla:</strong> Dices &ldquo;{speechConfig.wakeWord || 'música'}&rdquo; &rarr; El orbe brilla y dice <em>&iquest;Listo? {(speechConfig.delayedMicSeconds || 3) > 1 ? Array.from({ length: speechConfig.delayedMicSeconds || 3 }, (_, i) => (speechConfig.delayedMicSeconds || 3) - i).join(', ') : '1'}</em> con suaves avisos sonoros &rarr; <em>&iexcl;Habla ahora!</em> con sonido de activaci&oacute;n y micr&oacute;fono abierto para pedir tu m&uacute;sica.
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
                 {/* Notice: Inmunidad Acústica tras Poner Canción */}
                 <div className="p-2.5 rounded-lg bg-emerald-950/20 border border-emerald-500/20 text-[11px] text-emerald-300 flex items-center gap-2">
                   <ShieldCheck size={16} className="text-emerald-400 shrink-0" />

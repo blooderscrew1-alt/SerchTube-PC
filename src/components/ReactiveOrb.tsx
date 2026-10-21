@@ -23,8 +23,16 @@ interface ReactiveOrbProps {
   orbStyle?: OrbStyle;     // Estilo de orbe animado (32 opciones)
   waveScale?: number;      // Escala / tamaño de ondas (0.2 a 3.0)
   waveHeight?: number;     // Altura en px (ej. 320)
-  waveFullscreen?: boolean; // Cubrir toda la pantalla
-  wakeWordInfo?: { enabled: boolean; wakeWord: string; isAwaitingCommand: boolean; micSource?: 'host' | 'node' };
+  wakeWordInfo?: {
+    enabled: boolean;
+    wakeWord: string;
+    isAwaitingCommand: boolean;
+    micSource?: 'host' | 'node';
+    isCountdownActive?: boolean;
+    countdownRemaining?: number;
+    countdownTotal?: number;
+    countdownPhase?: 'ready' | 'counting' | 'speak_now';
+  };
 }
 
 /**
@@ -38,7 +46,21 @@ const EnclosedMicListeningAnimation: React.FC<{
   colors: { primary: string; secondary: string; accent: string; glow: string };
   wakeWord?: string;
   micSource?: 'host' | 'node';
-}> = ({ size, isActive, colors, wakeWord = 'música', micSource = 'host' }) => {
+  isCountdownActive?: boolean;
+  countdownRemaining?: number;
+  countdownTotal?: number;
+  countdownPhase?: 'ready' | 'counting' | 'speak_now';
+}> = ({
+  size,
+  isActive,
+  colors,
+  wakeWord = 'música',
+  micSource = 'host',
+  isCountdownActive = false,
+  countdownRemaining = 0,
+  countdownTotal = 3,
+  countdownPhase = 'ready'
+}) => {
   // 🎙️ Rojo = micrófono del host; Morado = activado por un nodo satélite
   const M = micSource === 'node' ? {
     ring1: 'border-purple-500/60', ring2: 'border-purple-400/40',
@@ -63,6 +85,107 @@ const EnclosedMicListeningAnimation: React.FC<{
     badge: 'bg-red-600/30 border border-red-400/50',
     dot: 'bg-red-400', badgeText: 'text-red-200'
   };
+
+  // Renderizado especial cuando está activa la cuenta regresiva antes de escuchar
+  if (isCountdownActive) {
+    const isSpeakNow = countdownPhase === 'speak_now';
+    const isReady = countdownPhase === 'ready';
+
+    return (
+      <div
+        className="absolute inset-0 rounded-full overflow-hidden flex flex-col items-center justify-center transition-all duration-300 pointer-events-none select-none z-20 opacity-100 scale-100 backdrop-blur-[2px]"
+        style={{
+          background: isSpeakNow
+            ? 'radial-gradient(circle, rgba(16, 185, 129, 0.28) 0%, rgba(2, 6, 23, 0.94) 70%, rgba(0, 0, 0, 0.98) 100%)'
+            : 'radial-gradient(circle, rgba(245, 158, 11, 0.25) 0%, rgba(15, 23, 42, 0.92) 65%, rgba(0, 0, 0, 0.98) 100%)'
+        }}
+      >
+        {/* Anillos concéntricos HUD de cuenta regresiva */}
+        <div
+          className={`absolute rounded-full border ${isSpeakNow ? 'border-emerald-500/60' : 'border-amber-500/50'} animate-ping pointer-events-none`}
+          style={{ width: `${Math.round(size * 0.72)}px`, height: `${Math.round(size * 0.72)}px`, animationDuration: '1.2s' }}
+        />
+        <div
+          className={`absolute rounded-full border border-dashed ${isSpeakNow ? 'border-emerald-400/40' : 'border-amber-400/40'} animate-spin-slow pointer-events-none`}
+          style={{ width: `${Math.round(size * 0.9)}px`, height: `${Math.round(size * 0.9)}px` }}
+        />
+
+        {/* Contenido Central */}
+        <div className="relative z-10 flex flex-col items-center justify-center text-center px-3 max-w-[90%]">
+          {/* Badge superior: "¿LISTO?" o "¡LISTO!" */}
+          <div className={`mb-1.5 px-3 py-0.5 rounded-full border flex items-center gap-1.5 shadow-md ${
+            isSpeakNow
+              ? 'bg-emerald-500/25 border-emerald-400/70 text-emerald-300'
+              : 'bg-amber-500/25 border-amber-400/70 text-amber-200'
+          }`}>
+            <span className={`w-2 h-2 rounded-full ${isSpeakNow ? 'bg-emerald-400' : 'bg-amber-400 animate-ping'}`} />
+            <span className="text-[10px] sm:text-xs font-mono font-black tracking-widest uppercase">
+              {isSpeakNow ? '¡LISTO!' : '¿LISTO?'}
+            </span>
+          </div>
+
+          {/* Estado central: Número de cuenta regresiva o "¡HABLA AHORA!" */}
+          {isSpeakNow ? (
+            <div className="flex flex-col items-center justify-center animate-bounce py-1">
+              <div className="text-xl sm:text-3xl font-black font-mono tracking-wider text-emerald-300 drop-shadow-[0_0_20px_#10b981]">
+                ¡HABLA AHORA!
+              </div>
+              <div className="text-[10px] sm:text-xs text-emerald-200/90 font-medium tracking-wide mt-1">
+                Pide tu canción u orden
+              </div>
+            </div>
+          ) : isReady ? (
+            <div className="flex flex-col items-center justify-center animate-pulse py-1">
+              <div className="text-4xl sm:text-6xl font-black font-mono text-amber-300 drop-shadow-[0_0_20px_rgba(245,158,11,0.9)]">
+                {countdownRemaining || countdownTotal}
+              </div>
+              <div className="text-[10px] text-amber-200/80 font-mono tracking-wider uppercase mt-1">
+                Prepárate...
+              </div>
+            </div>
+          ) : (
+            <div className="relative flex items-center justify-center my-0.5">
+              {/* Círculo SVG de progreso */}
+              <svg className="w-20 h-20 sm:w-24 sm:h-24 -rotate-90 transform" viewBox="0 0 100 100">
+                <circle
+                  cx="50"
+                  cy="50"
+                  r="40"
+                  stroke="rgba(255,255,255,0.12)"
+                  strokeWidth="6"
+                  fill="none"
+                />
+                <circle
+                  cx="50"
+                  cy="50"
+                  r="40"
+                  stroke="#f59e0b"
+                  strokeWidth="6"
+                  strokeDasharray="251"
+                  strokeDashoffset={251 - (251 * (countdownRemaining / (countdownTotal || 3)))}
+                  strokeLinecap="round"
+                  fill="none"
+                  className="transition-all duration-700 ease-linear drop-shadow-[0_0_10px_rgba(245,158,11,0.9)]"
+                />
+              </svg>
+              {/* Número grande palpitante */}
+              <span className="absolute text-4xl sm:text-5xl font-mono font-black text-white drop-shadow-[0_0_20px_rgba(245,158,11,1)] animate-pulse">
+                {countdownRemaining}
+              </span>
+            </div>
+          )}
+
+          {/* Badge inferior informativo */}
+          <div className="mt-1 px-2.5 py-0.5 rounded-full bg-black/60 border border-white/10 text-[9px] sm:text-[10px] font-mono tracking-wider text-gray-300/90 uppercase">
+            {isSpeakNow
+              ? '🎙️ Micrófono Abierto'
+              : `Escuchando en ${countdownRemaining}s...`}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       className={`absolute inset-0 rounded-full overflow-hidden flex flex-col items-center justify-center transition-all duration-300 pointer-events-none select-none z-20 ${
@@ -725,13 +848,17 @@ export const ReactiveOrb: React.FC<ReactiveOrbProps> = React.memo(({
             onClick={onClick}
           />
 
-          {/* Animación de micrófono encerrada en el orbe seleccionado (Se conmuta y aparece ÚNICAMENTE cuando se detecta la palabra clave de activación) */}
+          {/* Animación de micrófono encerrada en el orbe seleccionado (Se conmuta y aparece ÚNICAMENTE cuando se detecta la palabra clave o durante la cuenta regresiva) */}
           <EnclosedMicListeningAnimation
             size={currentOrbSize}
-            isActive={Boolean(wakeWordInfo?.isAwaitingCommand)}
+            isActive={Boolean(wakeWordInfo?.isAwaitingCommand || wakeWordInfo?.isCountdownActive)}
             colors={colors}
             micSource={wakeWordInfo?.micSource}
             wakeWord={wakeWordInfo?.wakeWord || 'música'}
+            isCountdownActive={Boolean(wakeWordInfo?.isCountdownActive)}
+            countdownRemaining={wakeWordInfo?.countdownRemaining}
+            countdownTotal={wakeWordInfo?.countdownTotal}
+            countdownPhase={wakeWordInfo?.countdownPhase}
           />
         </div>
 
@@ -741,8 +868,30 @@ export const ReactiveOrb: React.FC<ReactiveOrbProps> = React.memo(({
             {colors.label}
           </p>
 
+          {/* Delayed Mic Countdown Indicator */}
+          {wakeWordInfo && wakeWordInfo.isCountdownActive && (
+            <div className="mt-0.5 mb-1">
+              <div className={`flex items-center gap-2 px-3.5 py-1 rounded-full border text-xs font-mono animate-pulse shadow-lg ${
+                wakeWordInfo.countdownPhase === 'speak_now'
+                  ? 'bg-emerald-500/25 border-emerald-500/60 text-emerald-300'
+                  : 'bg-amber-500/25 border-amber-500/60 text-amber-300'
+              }`}>
+                <span className={`w-2 h-2 rounded-full ${
+                  wakeWordInfo.countdownPhase === 'speak_now' ? 'bg-emerald-400' : 'bg-amber-400'
+                } animate-ping`} />
+                <span>
+                  {wakeWordInfo.countdownPhase === 'ready'
+                    ? `⚡ "¿${wakeWordInfo.wakeWord || 'música'}" detectada • ¿Listo?`
+                    : wakeWordInfo.countdownPhase === 'speak_now'
+                      ? '🎙️ ¡Habla ahora! Pide tu canción u orden...'
+                      : `⏱️ ¿Listo? 3, 2, 1... Escuchando en ${wakeWordInfo.countdownRemaining}s`}
+                </span>
+              </div>
+            </div>
+          )}
+
           {/* Wake Word Status Indicator */}
-          {wakeWordInfo && wakeWordInfo.enabled && wakeWordInfo.isAwaitingCommand && (
+          {wakeWordInfo && wakeWordInfo.enabled && wakeWordInfo.isAwaitingCommand && !wakeWordInfo.isCountdownActive && (
             <div className="mt-0.5 mb-1">
               <div className="flex items-center gap-2 px-3 py-1 rounded-full bg-blue-500/20 border border-blue-500/50 text-blue-300 text-xs font-mono animate-pulse shadow-md">
                 <span className="w-2 h-2 rounded-full bg-blue-400 animate-ping" />

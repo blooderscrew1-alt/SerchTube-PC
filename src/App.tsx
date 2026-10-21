@@ -554,7 +554,9 @@ export default function App() {
       voicePriority: ['elevenlabs', 'gemini', 'edge'],
       wakeWordEnabled: false,
       wakeWord: 'música',
-      satelliteMicOnly: false
+      satelliteMicOnly: false,
+      delayedMicActivationEnabled: false,
+      delayedMicSeconds: 3
     };
     try {
       const saved = localStorage.getItem('serchtube_speech_config');
@@ -575,6 +577,23 @@ export default function App() {
     } catch (e) {}
     return defaultConfig;
   });
+
+  // Estado para la apertura retrasada del micrófono con cuenta regresiva en el orbe
+  const [delayedMicCountdown, setDelayedMicCountdown] = useState<{
+    active: boolean;
+    remaining: number;
+    total: number;
+    phase: 'ready' | 'counting' | 'speak_now';
+  }>({ active: false, remaining: 0, total: 0, phase: 'ready' });
+  const delayedMicIntervalRef = useRef<any>(null);
+
+  const cancelDelayedMicCountdown = useCallback(() => {
+    if (delayedMicIntervalRef.current) {
+      clearInterval(delayedMicIntervalRef.current);
+      delayedMicIntervalRef.current = null;
+    }
+    setDelayedMicCountdown({ active: false, remaining: 0, total: 0, phase: 'ready' });
+  }, []);
 
   const activeListeningTimerRef = useRef<any>(null);
   const speechConfigRef = useRef<SpeechConfig>(speechConfig);
@@ -627,7 +646,11 @@ export default function App() {
   // 🛡️ Seguridad Post-Reproducción de Micrófono Local:
   // Al poner o cambiar de canción, cerrar inmediatamente la escucha activa y volver a modo reposo
   // (hasta que la palabra clave "música" se vuelva a escuchar explícitamente), protegiendo contra audio de altavoces
+  // 🛡️ Seguridad Post-Reproducción de Micrófono Local:
+  // Al poner o cambiar de canción, cerrar inmediatamente la escucha activa y volver a modo reposo
+  // (hasta que la palabra clave "música" se vuelva a escuchar explícitamente), protegiendo contra audio de altavoces
   const enforcePostPlaybackMicSafety = useCallback(() => {
+    cancelDelayedMicCountdown();
     setIsAwaitingCommandAfterWakeWord(false);
     isAwaitingCommandRef.current = false;
     setIsDirectMicActive(false);
@@ -649,11 +672,115 @@ export default function App() {
     turnLockUntilRef.current = Date.now() + 4500;
     isTurnBusyRef.current = false;
     SpeechService.getInstance().resetSession();
-  }, []);
+  }, [cancelDelayedMicCountdown]);
 
-  // ⚡ Apertura Instantánea del Micrófono (en milisegundos):
-  // Atiende en milisegundos órdenes de abrir micrófono y detección de palabra clave,
-  // con filtro antirrepetición y deduplicación concurrente para no reiniciar el micro ni recortar frases.
+  // Iniciar apertura retrasada con cuenta regresiva en pantalla dentro del orbe
+  const startDelayedCountdownAndOpen = useCallback((source: 'host' | 'node', totalSeconds: number, initialCommand?: string) => {
+    // 1. Limpiar cualquier temporizador previo
+    cancelDelayedMicCountdown();
+    if (activeListeningTimerRef.current) {
+      clearTimeout(activeListeningTimerRef.current);
+      activeListeningTimerRef.current = null;
+    }
+
+    // 2. Salir del salvapantallas
+    setIsScreensaverActive(false);
+
+    // 3. Atenuar música de inmediato para preparar la sala
+    if (playerStateRef.current.isPlaying) {
+      AudioEngine.getInstance().startDucking(150);
+    }
+
+    // 4. Sonido de aviso y alerta
+    AudioEngine.getInstance().playBeep('up');
+
+    // 5. Establecer estado inicial de cuenta regresiva
+    let currentCount = totalSeconds;
+    setDelayedMicCountdown({
+      active: true,
+      remaining: currentCount,
+      total: totalSeconds,
+      phase: 'ready'
+    });
+    setAssistantResponse(`⏱️ ¿Listo? 3, 2, 1... Escuchando en ${currentCount}s`);
+    setMicActivationSource(source);
+
+    // Breve pausa para mostrar "¿LISTO?" (400ms) y luego iniciar conteo numérico
+    setTimeout(() => {
+      setDelayedMicCountdown(prev => prev.active ? { ...prev, phase: 'counting' } : prev);
+    }, 400);
+
+    delayedMicIntervalRef.current = setInterval(() => {
+      currentCount -= 1;
+      if (currentCount > 0) {
+        setDelayedMicCountdown({
+          active: true,
+          remaining: currentCount,
+          total: totalSeconds,
+          phase: 'counting'
+        });
+        setAssistantResponse(`⏱️ ${currentCount}...`);
+        AudioEngine.getInstance().playBeep('neutral');
+      } else {
+        // Conteo finalizado ➔ ¡HABLA AHORA!
+        if (delayedMicIntervalRef.current) {
+          clearInterval(delayedMicIntervalRef.current);
+          delayedMicIntervalRef.current = null;
+        }
+
+        setDelayedMicCountdown({
+          active: true,
+          remaining: 0,
+          total: totalSeconds,
+          phase: 'speak_now'
+        });
+
+        // 🔔 Sonido de activación de micrófono favorito al momento de hablar
+        AudioEngine.getInstance().playWakeSound(speechConfigRef.current?.wakeSound || 'random');
+        setAssistantResponse(source === 'node' ? '🎙️ ¡Habla ahora! Pide tu orden o canción (satélite)...' : '🎙️ ¡Habla ahora! Pide tu orden o canción...');
+
+        // Iniciar formalmente la escucha y temporizador de espera de comando
+        const now = Date.now();
+        lastMicActivationTimeRef.current = now;
+        setIsAwaitingCommandAfterWakeWord(true);
+        isAwaitingCommandRef.current = true;
+        SpeechService.getInstance().setAwaitingCommand(true);
+        SpeechService.getInstance().resetSession();
+        SpeechService.getInstance().startListening();
+        setSystemStatus('listening');
+        setIsListening(true);
+        setLastTranscript(initialCommand || '');
+
+        try {
+          NodeSyncService.getInstance().broadcastDirectEvent({ action: 'master_mic_active', timestamp: now });
+        } catch (_) {}
+
+        if (activeListeningTimerRef.current) clearTimeout(activeListeningTimerRef.current);
+        activeListeningTimerRef.current = setTimeout(() => {
+          setIsAwaitingCommandAfterWakeWord(false);
+          isAwaitingCommandRef.current = false;
+          SpeechService.getInstance().setAwaitingCommand(false);
+          setSystemStatus('idle');
+          setIsListening(false);
+          setAssistantResponse('⏱️ Petición cancelada por inactividad (5s)');
+          AudioEngine.getInstance().stopDucking();
+          SpeechService.getInstance().resetSession();
+          setTimeout(() => {
+            setAssistantResponse(prev => (prev && prev.includes('inactividad') ? null : prev));
+          }, 3000);
+        }, 5000);
+
+        // Desvanecer el cartel de "¡HABLA AHORA!" a los 900ms para mostrar la animación completa de escucha
+        setTimeout(() => {
+          setDelayedMicCountdown({ active: false, remaining: 0, total: 0, phase: 'ready' });
+        }, 900);
+      }
+    }, 1000);
+  }, [cancelDelayedMicCountdown]);
+
+  // ⚡ Apertura del Micrófono:
+  // Atiende órdenes de abrir micrófono y detección de palabra clave,
+  // con soporte para cuenta regresiva personalizada dentro del orbe o activación instantánea.
   const openMicrophoneInstantly = useCallback((source: 'host' | 'node' = 'host', initialCommand?: string, force?: boolean) => {
     const now = Date.now();
     const isAlreadyAwaiting = isAwaitingCommandRef.current;
@@ -661,12 +788,9 @@ export default function App() {
     const elapsedSinceLastActivation = now - lastMicActivationTimeRef.current;
 
     // 🛡️ FILTRO MULTI-DISPOSITIVO (PC + Nodos Satélites / Móviles QR):
-    // Si el micrófono ya está activo esperando una orden, o si se activó hace menos de 1.2 segundos
-    // (ventana de deduplicación de palabra clave concurrente entre PC y satélites),
-    // descartar la petición redundante para no reiniciar el reconocimiento ni cortar la frase que el usuario ya está pronunciando.
     if (!force) {
-      if (isAlreadyAwaiting || isDirectActive) {
-        console.log(`[SerchTube Mic Filter] 🛡️ Micrófono ya está activo escuchando orden (${source}). Petición redundante ignorada.`);
+      if (isAlreadyAwaiting || isDirectActive || delayedMicCountdown.active) {
+        console.log(`[SerchTube Mic Filter] 🛡️ Micrófono ya está activo o en cuenta regresiva (${source}). Petición redundante ignorada.`);
         return false;
       }
       if (elapsedSinceLastActivation < 1200) {
@@ -676,6 +800,18 @@ export default function App() {
     }
 
     lastMicActivationTimeRef.current = now;
+
+    // ⏱️ Apertura Retrasada del Micrófono (Cuenta regresiva personalizada "¿Listo? 3, 2, 1... ¡Habla ahora!"):
+    const isDelayedEnabled = speechConfigRef.current?.delayedMicActivationEnabled === true &&
+                             (speechConfigRef.current?.delayedMicSeconds || 0) > 0 &&
+                             !initialCommand;
+
+    if (!force && isDelayedEnabled) {
+      const delaySec = Math.max(1, Math.min(10, speechConfigRef.current.delayedMicSeconds || 3));
+      startDelayedCountdownAndOpen(source, delaySec);
+      return true;
+    }
+
     isAwaitingCommandRef.current = true;
 
     // 1. Salir del salvapantallas de inmediato
@@ -734,7 +870,7 @@ export default function App() {
     }, 5000);
 
     return true;
-  }, []);
+  }, [cancelDelayedMicCountdown, delayedMicCountdown.active, startDelayedCountdownAndOpen]);
 
   // 5b. Auto Shutdown PC / System Timer State
   const [autoShutdownConfig, setAutoShutdownConfig] = useState<AutoShutdownConfig>(() => {
@@ -3981,6 +4117,20 @@ export default function App() {
   };
 
   const handleToggleListening = async () => {
+    // Si hay una cuenta regresiva activa en el orbe para retrasar la escucha, cancelarla al pulsar el botón
+    if (delayedMicCountdown.active) {
+      cancelDelayedMicCountdown();
+      setIsListening(false);
+      setIsDirectMicActive(false);
+      isDirectMicActiveRef.current = false;
+      setIsAwaitingCommandAfterWakeWord(false);
+      isAwaitingCommandRef.current = false;
+      SpeechService.getInstance().setAwaitingCommand(false);
+      setSystemStatus('idle');
+      AudioEngine.getInstance().stopDucking();
+      return;
+    }
+
     const speech = SpeechService.getInstance();
     if (isListening && (isDirectMicActiveRef.current || isAwaitingCommandRef.current)) {
       speech.stopListening();
@@ -4248,7 +4398,11 @@ export default function App() {
           enabled: speechConfig.wakeWordEnabled !== false,
           wakeWord: speechConfig.wakeWord || 'música',
           isAwaitingCommand: isAwaitingCommandAfterWakeWord,
-          micSource: micActivationSource || 'host'
+          micSource: micActivationSource || 'host',
+          isCountdownActive: delayedMicCountdown.active,
+          countdownRemaining: delayedMicCountdown.remaining,
+          countdownTotal: delayedMicCountdown.total,
+          countdownPhase: delayedMicCountdown.phase
         }}
         playlistQueue={playlistQueue}
         playlistIndex={playlistIndex}
