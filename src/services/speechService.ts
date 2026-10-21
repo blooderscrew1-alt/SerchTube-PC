@@ -189,6 +189,8 @@ export function parseWakeWord(transcript: string, wakeWord: string = "música"):
   if (wakeWordIndex === -1) {
     const conversationalPrefixes = [
       'oye musica', 'hey musica', 'hola musica', 'ok musica', 'oye serch', 'serchtube', 'serch',
+      'ye musica', 'lle musica', 'oe musica', 'oie musica', 'ey musica', 'ay musica', 'eh musica',
+      'ye serch', 'ey serch',
       'abrir microfono', 'abre el microfono', 'abre microfono', 'abrir el microfono',
       'activar microfono', 'activa el microfono', 'activa microfono',
       'abrir micro', 'abre el micro', 'abre micro', 'activa el micro', 'activar micro',
