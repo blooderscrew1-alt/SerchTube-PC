@@ -1762,50 +1762,87 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
                   </div>
 
                   {speechConfig.delayedMicActivationEnabled && (
-                    <div className="p-3 rounded-xl bg-black/60 border border-amber-500/30 space-y-2.5 animate-fadeIn">
+                    <div className="p-3.5 rounded-xl bg-black/60 border border-amber-500/30 space-y-3.5 animate-fadeIn">
                       <div className="flex items-center justify-between">
-                        <span className="text-xs font-medium text-gray-300 flex items-center gap-1.5">
+                        <span className="text-xs font-medium text-gray-300 flex items-center gap-2">
                           <span>Tiempo de espera antes de escuchar:</span>
-                          <span className="text-amber-400 font-mono font-bold">{speechConfig.delayedMicSeconds || 3} segundos</span>
+                          <span className="text-sm font-mono font-bold text-amber-400 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/30">
+                            {speechConfig.delayedMicSeconds || 3} segundos
+                          </span>
                         </span>
-                        <span className="text-[10px] text-gray-400 font-mono">Personalizable</span>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            window.dispatchEvent(new CustomEvent('serchtube:test-delayed-mic', {
+                              detail: { seconds: speechConfig.delayedMicSeconds || 3 }
+                            }));
+                          }}
+                          className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 border border-amber-500/40 text-amber-300 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
+                          title="Probar la secuencia visual y auditiva de cuenta regresiva ahora"
+                        >
+                          <Play size={11} />
+                          <span>Probar en vivo</span>
+                        </button>
                       </div>
 
-                      {/* Segundos buttons 1s, 2s, 3s, 4s, 5s */}
-                      <div className="grid grid-cols-5 gap-1.5">
-                        {[
-                          { sec: 1, label: '1s', note: 'Rápido' },
-                          { sec: 2, label: '2s', note: 'Corto' },
-                          { sec: 3, label: '3s', note: 'Recomendado' },
-                          { sec: 4, label: '4s', note: 'Pausado' },
-                          { sec: 5, label: '5s', note: 'Tranquilo' }
-                        ].map((item) => {
+                      {/* Deslizador (Slider) con pasos de 0.5 segundos */}
+                      <div className="space-y-1.5 px-1">
+                        <div className="relative">
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="5.0"
+                            step="0.5"
+                            value={speechConfig.delayedMicSeconds || 3}
+                            onChange={(e) => onUpdateSpeechConfig({ delayedMicSeconds: parseFloat(e.target.value) })}
+                            className="w-full h-2.5 bg-neutral-800 rounded-lg appearance-none cursor-pointer accent-amber-500 hover:accent-amber-400 focus:outline-none"
+                          />
+                        </div>
+
+                        {/* Marcas de escala de 0.5s */}
+                        <div className="flex justify-between text-[10px] font-mono text-gray-400 px-0.5 select-none">
+                          <span>0.5s</span>
+                          <span>1s</span>
+                          <span>1.5s</span>
+                          <span>2s</span>
+                          <span>2.5s</span>
+                          <span className="text-amber-400 font-bold">3s</span>
+                          <span>3.5s</span>
+                          <span>4s</span>
+                          <span>4.5s</span>
+                          <span>5s</span>
+                        </div>
+                      </div>
+
+                      {/* Selector rápido de botones para cada paso de 0.5s (0.5s hasta 5.0s) */}
+                      <div className="grid grid-cols-5 sm:grid-cols-10 gap-1 pt-1">
+                        {[0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0].map((sec) => {
                           const currentSec = speechConfig.delayedMicSeconds || 3;
-                          const isSelected = currentSec === item.sec;
+                          const isSelected = currentSec === sec;
                           return (
                             <button
-                              key={item.sec}
+                              key={sec}
                               type="button"
-                              onClick={() => onUpdateSpeechConfig({ delayedMicSeconds: item.sec })}
-                              className={`py-2 px-1.5 rounded-lg text-center border transition-all cursor-pointer flex flex-col items-center justify-center ${
+                              onClick={() => onUpdateSpeechConfig({ delayedMicSeconds: sec })}
+                              className={`py-1.5 px-1 rounded-lg text-center border transition-all cursor-pointer flex flex-col items-center justify-center ${
                                 isSelected
-                                  ? 'bg-amber-500 text-black border-amber-400 font-bold shadow-[0_0_12px_rgba(245,158,11,0.4)]'
+                                  ? 'bg-amber-500 text-black border-amber-400 font-bold shadow-[0_0_10px_rgba(245,158,11,0.5)]'
                                   : 'bg-white/5 border-white/10 text-gray-300 hover:text-white hover:bg-white/10'
                               }`}
                             >
-                              <span className="text-xs font-mono font-bold leading-none">{item.label}</span>
-                              <span className={`text-[9px] leading-tight mt-0.5 ${isSelected ? 'text-black/80 font-semibold' : 'text-gray-400'}`}>
-                                {item.note}
-                              </span>
+                              <span className="text-xs font-mono font-bold leading-none">{sec}s</span>
+                              {sec === 3.0 && !isSelected && (
+                                <span className="text-[8px] text-amber-400/90 font-medium leading-none mt-0.5">Rec</span>
+                              )}
                             </button>
                           );
                         })}
                       </div>
 
-                      <div className="text-[10px] text-amber-300/80 bg-amber-950/30 border border-amber-500/20 rounded-lg p-2 flex items-start gap-1.5">
-                        <Sparkles size={12} className="text-amber-400 shrink-0 mt-0.5" />
+                      <div className="text-[10px] text-amber-300/80 bg-amber-950/30 border border-amber-500/20 rounded-lg p-2.5 flex items-start gap-2">
+                        <Sparkles size={13} className="text-amber-400 shrink-0 mt-0.5" />
                         <span>
-                          <strong>Secuencia en pantalla:</strong> Dices &ldquo;{speechConfig.wakeWord || 'música'}&rdquo; &rarr; El orbe brilla y dice <em>&iquest;Listo? {(speechConfig.delayedMicSeconds || 3) > 1 ? Array.from({ length: speechConfig.delayedMicSeconds || 3 }, (_, i) => (speechConfig.delayedMicSeconds || 3) - i).join(', ') : '1'}</em> con suaves avisos sonoros &rarr; <em>&iexcl;Habla ahora!</em> con sonido de activaci&oacute;n y micr&oacute;fono abierto para pedir tu m&uacute;sica.
+                          <strong>Secuencia en el orbe:</strong> Dices &ldquo;{speechConfig.wakeWord || 'música'}&rdquo; &rarr; Aparece el aviso <em>&iquest;Listo?</em> &rarr; El orbe descuenta con precisión cada 0.5s ({speechConfig.delayedMicSeconds || 3}s) con pulsos suaves &rarr; <em>&iexcl;Habla ahora!</em> en verde esmeralda y tono de aviso para que formules tu orden sin prisas ni cortes.
                         </span>
                       </div>
                     </div>

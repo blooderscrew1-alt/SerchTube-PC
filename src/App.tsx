@@ -695,32 +695,47 @@ export default function App() {
     AudioEngine.getInstance().playBeep('up');
 
     // 5. Establecer estado inicial de cuenta regresiva
-    let currentCount = totalSeconds;
+    const totalMs = Math.round(totalSeconds * 1000);
+    const targetEndTime = Date.now() + totalMs;
+
     setDelayedMicCountdown({
       active: true,
-      remaining: currentCount,
+      remaining: totalSeconds,
       total: totalSeconds,
       phase: 'ready'
     });
-    setAssistantResponse(`⏱️ ¿Listo? 3, 2, 1... Escuchando en ${currentCount}s`);
+    setAssistantResponse(`⏱️ ¿Listo? 3, 2, 1... Escuchando en ${totalSeconds}s`);
     setMicActivationSource(source);
 
-    // Breve pausa para mostrar "¿LISTO?" (400ms) y luego iniciar conteo numérico
+    // Breve pausa para mostrar "¿LISTO?" (200ms si <=1s, 350ms si >1s) y luego iniciar conteo numérico
+    const readyDelay = totalSeconds <= 1 ? 200 : 350;
     setTimeout(() => {
       setDelayedMicCountdown(prev => prev.active ? { ...prev, phase: 'counting' } : prev);
-    }, 400);
+    }, readyDelay);
+
+    let lastBeepStep = Math.ceil(totalSeconds * 2);
 
     delayedMicIntervalRef.current = setInterval(() => {
-      currentCount -= 1;
-      if (currentCount > 0) {
+      const now = Date.now();
+      const remainingMs = Math.max(0, targetEndTime - now);
+      // Redondear a un decimal para evitar errores de coma flotante
+      const remainingSec = Math.round((remainingMs / 1000) * 10) / 10;
+      const currentBeepStep = Math.ceil(remainingSec * 2);
+
+      if (remainingMs > 60) {
         setDelayedMicCountdown({
           active: true,
-          remaining: currentCount,
+          remaining: remainingSec,
           total: totalSeconds,
           phase: 'counting'
         });
-        setAssistantResponse(`⏱️ ${currentCount}...`);
-        AudioEngine.getInstance().playBeep('neutral');
+
+        // Suave beep cada paso de 0.5 segundos
+        if (currentBeepStep < lastBeepStep) {
+          lastBeepStep = currentBeepStep;
+          setAssistantResponse(`⏱️ ${remainingSec}s...`);
+          AudioEngine.getInstance().playBeep('neutral');
+        }
       } else {
         // Conteo finalizado ➔ ¡HABLA AHORA!
         if (delayedMicIntervalRef.current) {
@@ -740,8 +755,8 @@ export default function App() {
         setAssistantResponse(source === 'node' ? '🎙️ ¡Habla ahora! Pide tu orden o canción (satélite)...' : '🎙️ ¡Habla ahora! Pide tu orden o canción...');
 
         // Iniciar formalmente la escucha y temporizador de espera de comando
-        const now = Date.now();
-        lastMicActivationTimeRef.current = now;
+        const nowMic = Date.now();
+        lastMicActivationTimeRef.current = nowMic;
         setIsAwaitingCommandAfterWakeWord(true);
         isAwaitingCommandRef.current = true;
         SpeechService.getInstance().setAwaitingCommand(true);
@@ -752,7 +767,7 @@ export default function App() {
         setLastTranscript(initialCommand || '');
 
         try {
-          NodeSyncService.getInstance().broadcastDirectEvent({ action: 'master_mic_active', timestamp: now });
+          NodeSyncService.getInstance().broadcastDirectEvent({ action: 'master_mic_active', timestamp: nowMic });
         } catch (_) {}
 
         if (activeListeningTimerRef.current) clearTimeout(activeListeningTimerRef.current);
@@ -775,7 +790,7 @@ export default function App() {
           setDelayedMicCountdown({ active: false, remaining: 0, total: 0, phase: 'ready' });
         }, 900);
       }
-    }, 1000);
+    }, 100);
   }, [cancelDelayedMicCountdown]);
 
   // ⚡ Apertura del Micrófono:
@@ -807,7 +822,7 @@ export default function App() {
                              !initialCommand;
 
     if (!force && isDelayedEnabled) {
-      const delaySec = Math.max(1, Math.min(10, speechConfigRef.current.delayedMicSeconds || 3));
+      const delaySec = Math.max(0.5, Math.min(10, speechConfigRef.current.delayedMicSeconds || 3));
       startDelayedCountdownAndOpen(source, delaySec);
       return true;
     }
@@ -2080,13 +2095,20 @@ export default function App() {
     };
 
     const handleOpenGoogleHome = () => setIsGoogleHomeOpen(true);
+    const handleDelayedMicTest = (e: any) => {
+      const sec = typeof e?.detail?.seconds === 'number' ? e.detail.seconds : (speechConfigRef.current?.delayedMicSeconds || 3);
+      startDelayedCountdownAndOpen('host', Math.max(0.5, Math.min(10, sec)));
+    };
+
     window.addEventListener('serchtube:open-google-home', handleOpenGoogleHome);
     window.addEventListener('serchtube:test-auto-volume', handleTestTrigger);
+    window.addEventListener('serchtube:test-delayed-mic', handleDelayedMicTest);
     return () => {
       window.removeEventListener('serchtube:open-google-home', handleOpenGoogleHome);
       window.removeEventListener('serchtube:test-auto-volume', handleTestTrigger);
+      window.removeEventListener('serchtube:test-delayed-mic', handleDelayedMicTest);
     };
-  }, [autoVolumeConfig.targetVolume]);
+  }, [autoVolumeConfig.targetVolume, startDelayedCountdownAndOpen]);
 
   // Execute Search for Artist or Track
   // Rule: "cuando el usuario ingresa solo el nombre de un artista sin especificar cancion se debe abrir la primera cancion de playlist que se encuentra de ese artista"

@@ -91,6 +91,13 @@ const EnclosedMicListeningAnimation: React.FC<{
     const isSpeakNow = countdownPhase === 'speak_now';
     const isReady = countdownPhase === 'ready';
 
+    const formatSec = (val?: number) => {
+      if (typeof val !== 'number') return '0';
+      return Number.isInteger(val) ? `${val}` : val.toFixed(1);
+    };
+    const displayRemaining = formatSec(countdownRemaining ?? countdownTotal);
+    const progressFraction = Math.max(0, Math.min(1, ((countdownRemaining ?? 0) / (countdownTotal || 3))));
+
     return (
       <div
         className="absolute inset-0 rounded-full overflow-hidden flex flex-col items-center justify-center transition-all duration-300 pointer-events-none select-none z-20 opacity-100 scale-100 backdrop-blur-[2px]"
@@ -137,7 +144,7 @@ const EnclosedMicListeningAnimation: React.FC<{
           ) : isReady ? (
             <div className="flex flex-col items-center justify-center animate-pulse py-1">
               <div className="text-4xl sm:text-6xl font-black font-mono text-amber-300 drop-shadow-[0_0_20px_rgba(245,158,11,0.9)]">
-                {countdownRemaining || countdownTotal}
+                {displayRemaining}
               </div>
               <div className="text-[10px] text-amber-200/80 font-mono tracking-wider uppercase mt-1">
                 Prepárate...
@@ -162,15 +169,15 @@ const EnclosedMicListeningAnimation: React.FC<{
                   stroke="#f59e0b"
                   strokeWidth="6"
                   strokeDasharray="251"
-                  strokeDashoffset={251 - (251 * (countdownRemaining / (countdownTotal || 3)))}
+                  strokeDashoffset={251 - (251 * progressFraction)}
                   strokeLinecap="round"
                   fill="none"
-                  className="transition-all duration-700 ease-linear drop-shadow-[0_0_10px_rgba(245,158,11,0.9)]"
+                  className="transition-all duration-300 ease-linear drop-shadow-[0_0_10px_rgba(245,158,11,0.9)]"
                 />
               </svg>
               {/* Número grande palpitante */}
               <span className="absolute text-4xl sm:text-5xl font-mono font-black text-white drop-shadow-[0_0_20px_rgba(245,158,11,1)] animate-pulse">
-                {countdownRemaining}
+                {displayRemaining}
               </span>
             </div>
           )}
@@ -179,7 +186,7 @@ const EnclosedMicListeningAnimation: React.FC<{
           <div className="mt-1 px-2.5 py-0.5 rounded-full bg-black/60 border border-white/10 text-[9px] sm:text-[10px] font-mono tracking-wider text-gray-300/90 uppercase">
             {isSpeakNow
               ? '🎙️ Micrófono Abierto'
-              : `Escuchando en ${countdownRemaining}s...`}
+              : `Escuchando en ${displayRemaining}s...`}
           </div>
         </div>
       </div>
@@ -884,7 +891,7 @@ export const ReactiveOrb: React.FC<ReactiveOrbProps> = React.memo(({
                     ? `⚡ "¿${wakeWordInfo.wakeWord || 'música'}" detectada • ¿Listo?`
                     : wakeWordInfo.countdownPhase === 'speak_now'
                       ? '🎙️ ¡Habla ahora! Pide tu canción u orden...'
-                      : `⏱️ ¿Listo? 3, 2, 1... Escuchando en ${wakeWordInfo.countdownRemaining}s`}
+                      : `⏱️ ¿Listo? 3, 2, 1... Escuchando en ${typeof wakeWordInfo.countdownRemaining === 'number' ? (Number.isInteger(wakeWordInfo.countdownRemaining) ? wakeWordInfo.countdownRemaining : wakeWordInfo.countdownRemaining.toFixed(1)) : '0'}s`}
                 </span>
               </div>
             </div>
