@@ -595,10 +595,10 @@ const YouTubePlayerComponent: React.FC<YouTubePlayerProps> = ({
                 const durVal = playerRef.current?.getDuration?.() || 0;
                 const detectedTrack: Track = {
                   id: vData.video_id,
-                  title: vData.title || latestPropsRef.current.track?.title || 'Canción',
-                  artist: vData.author || latestPropsRef.current.track?.artist || '',
+                  title: vData.title || '',
+                  artist: vData.author || '',
                   thumbnail: `https://i.ytimg.com/vi/${vData.video_id}/hqdefault.jpg`,
-                  duration: durVal > 0 ? `${Math.floor(durVal / 60)}:${Math.floor(durVal % 60).toString().padStart(2, '0')}` : '3:45'
+                  duration: durVal > 0 ? `${Math.floor(durVal / 60)}:${Math.floor(durVal % 60).toString().padStart(2, '0')}` : ''
                 };
                 lastVideoIdRef.current = vData.video_id;
                 latestPropsRef.current.onTrackSelectedByPlayer?.(detectedTrack);
@@ -612,10 +612,13 @@ const YouTubePlayerComponent: React.FC<YouTubePlayerProps> = ({
                 const curVData = event.target.getVideoData?.();
                 const plTracks: Track[] = pl.map((id: string) => ({
                   id,
-                  title: id === curVData?.video_id ? (curVData?.title || 'Canción') : 'Canción de la lista',
-                  artist: curVData?.author || '',
+                  // La playlist nativa solo entrega IDs: se usa el título real únicamente
+                  // para el video actual. Los demás quedan sin título para que App los
+                  // repare con metadatos reales (nunca "Canción de la lista"/duraciones).
+                  title: id === curVData?.video_id ? (curVData?.title || '') : '',
+                  artist: id === curVData?.video_id ? (curVData?.author || '') : '',
                   thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
-                  duration: '3:45'
+                  duration: ''
                 }));
                 latestPropsRef.current.onQueueReferenceUpdated?.(plTracks);
               }
@@ -1012,10 +1015,10 @@ const YouTubePlayerComponent: React.FC<YouTubePlayerProps> = ({
         if (data.videoId !== latestPropsRef.current.track?.id) {
           const trackFromEvent: Track = {
             id: data.videoId,
-            title: data.title || latestPropsRef.current.track?.title || 'Canción',
-            artist: data.artist || latestPropsRef.current.track?.artist || '',
+            title: data.title || '',
+            artist: data.artist || '',
             thumbnail: `https://i.ytimg.com/vi/${data.videoId}/hqdefault.jpg`,
-            duration: '3:45'
+            duration: ''
           };
           lastVideoIdRef.current = data.videoId;
           latestPropsRef.current.onTrackSelectedByPlayer?.(trackFromEvent);

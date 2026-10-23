@@ -1,4 +1,5 @@
 import { NodeRole, PlayerState, SyncMessage, Track } from '../types';
+import { cleanQueueTrack } from '../utils/queueTracks';
 
 export interface NodeSyncConfig {
   role: NodeRole;
@@ -200,30 +201,30 @@ export class NodeSyncService {
               if (msg.currentTrack) {
                 const trackId = msg.currentTrack.id || msg.currentTrack.videoId || 'track';
                 const trackThumb = msg.currentTrack.thumbnail || msg.currentTrack.miniatura || (trackId ? `https://i.ytimg.com/vi/${trackId}/hqdefault.jpg` : '');
-                adaptedState.currentTrack = {
+                adaptedState.currentTrack = cleanQueueTrack({
                   id: trackId,
-                  title: msg.currentTrack.title || msg.currentTrack.name || 'Canción',
-                  artist: msg.currentTrack.artist || 'Artista',
+                  title: msg.currentTrack.title || msg.currentTrack.name || '',
+                  artist: msg.currentTrack.artist || '',
                   thumbnail: trackThumb,
                   duration: typeof msg.currentTrack.duration === 'number'
                     ? `${Math.floor(msg.currentTrack.duration / 60)}:${(msg.currentTrack.duration % 60).toString().padStart(2, '0')}`
-                    : (msg.currentTrack.duration || '3:30')
-                };
+                    : (msg.currentTrack.duration || '')
+                });
               }
               const rawQueue = msg.queue || msg.playlist || msg.upcomingQueue;
               if (Array.isArray(rawQueue) && rawQueue.length > 0) {
                 const parsedQueue: Track[] = rawQueue.map((item: any) => {
                   const id = item.id || item.videoId || '';
                   const thumb = item.thumbnail || item.miniatura || (id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : '');
-                  return {
+                  return cleanQueueTrack({
                     id,
-                    title: item.title || item.name || 'Canción',
-                    artist: item.artist || 'Artista',
+                    title: item.title || item.name || '',
+                    artist: item.artist || '',
                     thumbnail: thumb,
                     duration: typeof item.duration === 'number'
                       ? `${Math.floor(item.duration / 60)}:${(item.duration % 60).toString().padStart(2, '0')}`
-                      : (item.duration || '3:30')
-                  };
+                      : (item.duration || '')
+                  });
                 });
                 adaptedState.playlistQueue = parsedQueue;
                 this.onPlaylistQueueCallback?.(parsedQueue);
@@ -244,13 +245,13 @@ export class NodeSyncService {
                 const parsedQueue: Track[] = rawQueue.map((item: any) => {
                   const id = item.id || item.videoId || '';
                   const thumb = item.thumbnail || item.miniatura || (id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : '');
-                  return {
+                  return cleanQueueTrack({
                     id,
-                    title: item.title || item.name || 'Canción',
-                    artist: item.artist || 'Artista',
+                    title: item.title || item.name || '',
+                    artist: item.artist || '',
                     thumbnail: thumb,
-                    duration: item.duration || '3:30'
-                  };
+                    duration: item.duration || ''
+                  });
                 });
                 payload.playlistQueue = parsedQueue;
                 this.onPlaylistQueueCallback?.(parsedQueue);
@@ -264,13 +265,13 @@ export class NodeSyncService {
                 const parsedQueue: Track[] = rawQueue.map((item: any) => {
                   const id = item.id || item.videoId || '';
                   const thumb = item.thumbnail || item.miniatura || (id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : '');
-                  return {
+                  return cleanQueueTrack({
                     id,
-                    title: item.title || item.name || 'Canción',
-                    artist: item.artist || 'Artista',
+                    title: item.title || item.name || '',
+                    artist: item.artist || '',
                     thumbnail: thumb,
-                    duration: item.duration || '3:30'
-                  };
+                    duration: item.duration || ''
+                  });
                 });
                 this.onPlaylistQueueCallback?.(parsedQueue);
                 this.onStateUpdateCallback?.({ playlistQueue: parsedQueue });
@@ -388,20 +389,21 @@ export class NodeSyncService {
 
     // Ensure strictly up to 20 tracks
     const formattedQueue = rawList.slice(0, 20).map((t, idx) => {
-      const id = t.id || '';
-      const thumbnail = t.thumbnail && !t.thumbnail.includes('unsplash')
-        ? t.thumbnail
+      const cleaned = cleanQueueTrack(t);
+      const id = cleaned.id || '';
+      const thumbnail = cleaned.thumbnail && !cleaned.thumbnail.includes('unsplash')
+        ? cleaned.thumbnail
         : (id ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg` : '');
-      const title = t.title || 'Canción';
+      const title = cleaned.title || '';
       return {
         id,
         videoId: id,
         title,
         name: title, // Explicit Spanish alias ("nombre del video")
-        artist: t.artist || 'Artista',
+        artist: cleaned.artist || '',
         thumbnail,
         miniatura: thumbnail, // Explicit Spanish alias ("miniatura")
-        duration: t.duration || '3:30',
+        duration: cleaned.duration || '',
         isCurrent: idx === 0,
         index: idx
       };
@@ -428,17 +430,18 @@ export class NodeSyncService {
       : (currentTrack?.id ? `https://i.ytimg.com/vi/${currentTrack.id}/hqdefault.jpg` : '');
 
     const currentTrackId = currentTrack?.id || '';
+    const cleanedCurrent = currentTrack ? cleanQueueTrack(currentTrack) : null;
 
     const androidPlaybackPacket = {
       type: 'playback_state',
       room: this.config.room,
       isPlaying: state.isPlaying ?? false,
-      currentTrack: currentTrack ? {
+      currentTrack: cleanedCurrent ? {
         id: currentTrackId,
         videoId: currentTrackId,
-        title: currentTrack.title,
-        name: currentTrack.title, // "nombre del video"
-        artist: currentTrack.artist,
+        title: cleanedCurrent.title,
+        name: cleanedCurrent.title, // "nombre del video"
+        artist: cleanedCurrent.artist,
         duration: durationSec,
         position: Math.round(state.currentTime ?? 0),
         thumbnail: currentTrackThumbnail,

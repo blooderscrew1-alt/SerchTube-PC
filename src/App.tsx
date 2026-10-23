@@ -35,6 +35,7 @@ import { GoogleHomeModal } from './components/GoogleHomeModal';
 import { AnimatedQrCountdownModal } from './components/AnimatedQrCountdownModal';
 import { googleHomeService } from './services/googleHomeService';
 import { isPureResumePhrase, extractYouTubeId, isValidYouTubeId, isValidTrackTitleClient, sanitizeTrackClient } from './utils/youtube';
+import { applyTrackMetadata, cleanQueueTrack, needsTitleRepair } from './utils/queueTracks';
 import { getEnthusiasticFeedback } from './utils/speechPhrases';
 
 interface GamepadControlsProps {
@@ -382,6 +383,66 @@ export default function App() {
   // Keep track of last known track and exact playback second for resume
   const lastKnownTrackRef = useRef<Track | null>(playerState.currentTrack);
   const lastKnownTimeRef = useRef<number>(0);
+
+  // 🛠️ Reparación de títulos de la cola:
+  // Si una pista llega con la duración como nombre ("4:04") o con un marcador de
+  // posición ("Canción de la lista"), se piden sus metadatos reales a YouTube por ID
+  // y se actualizan cola + canción actual sin tocar las pistas que ya son válidas.
+  const metadataRequestedIdsRef = useRef<Set<string>>(new Set());
+
+  useEffect(() => {
+    const candidates: Track[] = [];
+    if (playerState.currentTrack) candidates.push(playerState.currentTrack);
+    candidates.push(...playlistQueue);
+
+    const ids = Array.from(
+      new Set(
+        candidates
+          .filter(t => t && t.id && needsTitleRepair(t) && !metadataRequestedIdsRef.current.has(t.id))
+          .map(t => t.id)
+      )
+    ).slice(0, 12);
+
+    if (ids.length === 0) return;
+
+    ids.forEach(id => metadataRequestedIdsRef.current.add(id));
+    let cancelled = false;
+
+    fetch(`/api/youtube/video-info?ids=${encodeURIComponent(ids.join(','))}`)
+      .then(r => (r.ok ? r.json() : null))
+      .then(payload => {
+        if (cancelled) return;
+        const items: Track[] = Array.isArray(payload?.items) ? payload.items : [];
+        const resolved = new Map<string, Track>();
+        for (const item of items) {
+          if (item && item.id && item.title) resolved.set(item.id, item);
+        }
+        if (resolved.size === 0) return;
+
+        const merge = (track: Track): Track => {
+          const meta = resolved.get(track.id);
+          return meta ? applyTrackMetadata(track, meta) : track;
+        };
+
+        setPlaylistQueue(prev => prev.map(merge));
+        setPlayerState(prev => {
+          if (!prev.currentTrack) return prev;
+          const meta = resolved.get(prev.currentTrack.id);
+          if (!meta) return prev;
+          const repaired = applyTrackMetadata(prev.currentTrack, meta);
+          lastKnownTrackRef.current = repaired;
+          return { ...prev, currentTrack: repaired };
+        });
+      })
+      .catch(() => {
+        // Sin conexión: la interfaz seguirá mostrando un texto neutral y reintentará
+        // en la próxima sesión, nunca la duración como nombre de canción.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [playlistQueue, playerState.currentTrack?.id]);
 
   // 2. System Status & Reactive Orb
   const [systemStatus, setSystemStatus] = useState<SystemStatus>('idle');
@@ -3565,13 +3626,16 @@ export default function App() {
         break;
       }
       case 'LOAD_VIDEO': {
-        const newTrack: Track = {
+        // 🛡️ Se limpia el título recibido: un nodo/extensión puede mandar la
+        // duración ("4:04") como nombre. Si no hay nombre real, queda vacío y el
+        // reparador de metadatos lo resuelve por videoId.
+        const newTrack: Track = cleanQueueTrack({
           id: evt.videoId,
-          title: evt.title || 'Canción',
-          artist: evt.artist || 'Artista',
+          title: evt.title || '',
+          artist: evt.artist || '',
           thumbnail: evt.thumbnail || `https://i.ytimg.com/vi/${evt.videoId}/hqdefault.jpg`,
-          duration: evt.duration || '3:45'
-        };
+          duration: evt.duration || ''
+        });
 
         if (Array.isArray(evt.items) && evt.items.length > 0) {
           const seenIds = new Set<string>();
@@ -3580,27 +3644,34 @@ export default function App() {
 
           for (const it of evt.items) {
             if (!it || !it.id || seenIds.has(it.id)) continue;
-            const fullKey = normalizeSongKeyForDedup(it.title);
-            const partKey = extractSongPartForDedup(it.title);
+            const cleaned = cleanQueueTrack({
+              id: it.id,
+              title: it.title || '',
+              artist: it.artist || '',
+              thumbnail: it.thumbnail || `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`,
+              duration: it.duration || ''
+            });
+            const hasUsableTitle = !!cleaned.title;
+            const fullKey = hasUsableTitle ? normalizeSongKeyForDedup(cleaned.title) : '';
+            const partKey = hasUsableTitle ? extractSongPartForDedup(cleaned.title) : '';
 
-            if (formattedItems.length > 0) {
+            if (formattedItems.length > 0 && hasUsableTitle) {
               const first = formattedItems[0];
               // 🛡️ REGLA ANTI-REPETICIÓN: Jamás admitir la misma canción que la pista #1 bajo otro canal
-              if (areSameSongClient(it.title, first.title)) continue;
-              if (areSameSongClient(it.title, newTrack.title)) continue;
+              if (areSameSongClient(cleaned.title, first.title)) continue;
+              if (areSameSongClient(cleaned.title, newTrack.title)) continue;
               if (fullKey && seenKeys.has(fullKey)) continue;
               if (partKey && seenKeys.has(partKey)) continue;
             }
 
-            seenIds.add(it.id);
+            seenIds.add(cleaned.id);
             if (fullKey) seenKeys.add(fullKey);
             if (partKey) seenKeys.add(partKey);
             formattedItems.push({
-              id: it.id,
-              title: it.title,
-              artist: it.artist || newTrack.artist,
-              thumbnail: it.thumbnail || `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`,
-              duration: it.duration || '3:45'
+              ...cleaned,
+              artist: cleaned.artist || (hasUsableTitle ? newTrack.artist : ''),
+              thumbnail: cleaned.thumbnail || `https://i.ytimg.com/vi/${cleaned.id}/hqdefault.jpg`,
+              duration: cleaned.duration || ''
             });
           }
 
@@ -4072,19 +4143,26 @@ export default function App() {
       const freshTracks: Track[] = [];
       for (const item of nativeVideos) {
         if (!item || !item.id || seenIds.has(item.id)) continue;
-        if (currentTrack && areSameSongClient(item.title, currentTrack.title)) continue;
-        const k = normalizeSongKeyForDedup(item.title);
-        const pk = extractSongPartForDedup(item.title);
+
+        // 🛡️ La extensión puede entregar la duración ("4:04") como título.
+        // Se limpia antes de entrar a la cola; si no hay nombre real, se deja
+        // vacío para que el reparador de metadatos lo complete por ID.
+        const cleaned = cleanQueueTrack(item);
+        const hasUsableTitle = !!cleaned.title;
+
+        if (hasUsableTitle && currentTrack && areSameSongClient(cleaned.title, currentTrack.title)) continue;
+        const k = hasUsableTitle ? normalizeSongKeyForDedup(cleaned.title) : '';
+        const pk = hasUsableTitle ? extractSongPartForDedup(cleaned.title) : '';
         if (k && seenKeys.has(k)) continue;
         if (pk && seenKeys.has(pk)) continue;
 
-        seenIds.add(item.id);
+        seenIds.add(cleaned.id);
         if (k) seenKeys.add(k);
         if (pk) seenKeys.add(pk);
         freshTracks.push({
-          ...item,
-          thumbnail: item.thumbnail || `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
-          duration: item.duration || '3:45'
+          ...cleaned,
+          thumbnail: cleaned.thumbnail || `https://i.ytimg.com/vi/${cleaned.id}/hqdefault.jpg`,
+          duration: cleaned.duration || ''
         });
       }
 
@@ -4102,9 +4180,11 @@ export default function App() {
   }, []);
 
   // Manejador cuando el usuario hace clic directamente en "Más vídeos" dentro del reproductor de YouTube
-  const handleTrackSelectedByPlayer = useCallback((newTrack: Track) => {
-    if (!newTrack || !newTrack.id) return;
-    if (newTrack.id === playerStateRef.current.currentTrack?.id) return;
+  const handleTrackSelectedByPlayer = useCallback((incomingTrack: Track) => {
+    if (!incomingTrack || !incomingTrack.id) return;
+    if (incomingTrack.id === playerStateRef.current.currentTrack?.id) return;
+
+    const newTrack = cleanQueueTrack(incomingTrack);
 
     setPlayerState(prev => ({
       ...prev,

@@ -452,7 +452,102 @@
 
   /* ---------- Integración Nativa con "Más vídeos" y Cola de Reproducción ---------- */
   let lastReportedVideoId = '';
-  let lastMoreVideosCount = 0;
+  let lastMoreVideosSignature = '';
+
+  const DURATION_ONLY_RX = /^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+)\s*$/;
+  const PLACEHOLDER_TITLE_RX = /^(?:cancion|canción|video|audio|youtube|artista|artist|musica|música|track|cancion de la lista|canción de la lista|cancion recomendada|canción recomendada|cancion sugerida|canción sugerida)$/i;
+
+  function normalizeText(value) {
+    return (value || '').replace(/\s+/g, ' ').trim();
+  }
+
+  function isDurationText(value) {
+    return DURATION_ONLY_RX.test(normalizeText(value));
+  }
+
+  function isPlaceholderTitle(value) {
+    const plain = normalizeText(value)
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    return !plain || PLACEHOLDER_TITLE_RX.test(plain);
+  }
+
+  function extractDuration(el) {
+    const selectors = [
+      '.ytp-pause-overlay-duration',
+      '.ytp-suggestion-duration',
+      '.ytp-pause-overlay-thumbnail-duration',
+      '[class*="duration"]'
+    ];
+    for (const selector of selectors) {
+      const node = el.querySelector(selector);
+      const text = normalizeText(node && node.textContent);
+      if (isDurationText(text)) return text;
+    }
+    return '';
+  }
+
+  function extractTitle(el) {
+    const titleSelectors = [
+      '.ytp-suggestion-title',
+      '.ytp-pause-overlay-title',
+      '#video-title',
+      '.ytp-title-text',
+      '[class*="suggestion-title"]',
+      '[class*="video-title"]'
+    ];
+    for (const selector of titleSelectors) {
+      const node = el.querySelector(selector);
+      const text = normalizeText(node && node.textContent);
+      if (text && !isDurationText(text) && !isPlaceholderTitle(text)) return text;
+    }
+
+    // aria-label / title / alt pueden venir como "Título - 4:04 de Autor".
+    const labelCandidates = [
+      el.getAttribute('aria-label'),
+      el.getAttribute('title'),
+      el.querySelector('img')?.getAttribute('alt')
+    ];
+    for (const raw of labelCandidates) {
+      let text = normalizeText(raw);
+      if (!text) continue;
+      text = text
+        .replace(/\s*[-–—|·]\s*\d{1,2}:\d{2}(?:\s*(?:de|by)\s*.+)?$/i, '')
+        .replace(/\s*[-–—|·]\s*(?:de|by)\s+.+$/i, '')
+        .trim();
+      if (text && !isDurationText(text) && !isPlaceholderTitle(text)) return text;
+    }
+
+    // Último recurso: nodos de texto cortos, descartando siempre duraciones.
+    const nodes = el.querySelectorAll('span, div, h3, h4, p, yt-formatted-string');
+    let best = '';
+    for (const node of nodes) {
+      if (node.children && node.children.length > 0) continue;
+      const text = normalizeText(node.textContent);
+      if (!text || isDurationText(text) || isPlaceholderTitle(text)) continue;
+      if (/^(?:ver|watch|reproducir|play|ahora|now|de|by)$/i.test(text)) continue;
+      if (text.length > best.length) best = text;
+    }
+    return best;
+  }
+
+  function extractArtist(el) {
+    const selectors = [
+      '.ytp-suggestion-author',
+      '.ytp-pause-overlay-channel',
+      '[class*="author"]',
+      '[class*="channel"]',
+      '[class*="byline"]'
+    ];
+    for (const selector of selectors) {
+      const node = el.querySelector(selector);
+      let text = normalizeText(node && node.textContent);
+      text = text.replace(/^(?:de|by)\s+/i, '').trim();
+      if (text && !isDurationText(text) && !/^(?:youtube|ver|watch|reproducir)$/i.test(text)) return text;
+    }
+    return '';
+  }
 
   function extractMoreVideos() {
     try {
@@ -485,27 +580,21 @@
         }
         if (!vid || seenIds.has(vid)) return;
 
-        const titleEl = el.querySelector('.ytp-suggestion-title, .ytp-pause-overlay-title, [class*="title"]') || el;
-        const authorEl = el.querySelector('.ytp-suggestion-author, [class*="author"], [class*="byline"]');
+        const title = extractTitle(el);
+        const artist = extractArtist(el);
         const imgEl = el.querySelector('img');
-
-        let title = (titleEl?.textContent || el.getAttribute('aria-label') || el.getAttribute('title') || '').trim();
-        // Limpiar sufijos como "de Autor" o duraciones
-        title = title.replace(/\s*-\s*\d+:\d+(\s*de\s*.+)?$/i, '').trim();
-
-        const artist = (authorEl?.textContent || '').trim();
         const thumbnail = imgEl?.src || `https://i.ytimg.com/vi/${vid}/hqdefault.jpg`;
 
-        if (vid) {
-          seenIds.add(vid);
-          items.push({
-            id: vid,
-            title: title || 'Canción sugerida',
-            artist: artist || currentVideoData?.author || '',
-            thumbnail,
-            duration: '3:45'
-          });
-        }
+        seenIds.add(vid);
+        items.push({
+          id: vid,
+          // Si no se pudo leer un nombre real, se envía vacío: SerchTube lo
+          // resuelve por ID. Nunca se manda la duración como título.
+          title: isDurationText(title) || isPlaceholderTitle(title) ? '' : title,
+          artist,
+          thumbnail,
+          duration: extractDuration(el)
+        });
       });
 
       // 3. Si YouTube tiene cargada una playlist/mix interna en el player
@@ -517,19 +606,21 @@
               seenIds.add(id);
               items.push({
                 id,
-                title: 'Canción recomendada',
-                artist: currentVideoData?.author || '',
+                title: '',
+                artist: '',
                 thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
-                duration: '3:45'
+                duration: ''
               });
             }
           });
         }
       }
 
-      // Si se encontraron recomendaciones o cambiaron, enviar a SerchTube
-      if (items.length > 0 && items.length !== lastMoreVideosCount) {
-        lastMoreVideosCount = items.length;
+      // Si cambiaron los IDs o los títulos, enviar a SerchTube (no solo el número:
+      // así una reparación de título también se propaga).
+      const signature = items.map(item => `${item.id}:${item.title}:${item.duration}`).join('|');
+      if (items.length > 0 && signature !== lastMoreVideosSignature) {
+        lastMoreVideosSignature = signature;
         try {
           window.parent.postMessage({
             source: SOURCE_OUT,
@@ -562,7 +653,7 @@
             title: vData.title || '',
             artist: vData.author || ''
           }, '*');
-          lastMoreVideosCount = 0;
+          lastMoreVideosSignature = '';
           setTimeout(extractMoreVideos, 1200);
         }
       }

@@ -11,6 +11,7 @@
     "publicar": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publicar-release.ps1",
     "prueba-ducking": "tsx scripts/prueba-ducking.ts",
     "prueba-voz": "tsx scripts/prueba-busqueda-voz.ts",
+    "prueba-cola": "tsx scripts/prueba-titulos-cola.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
     "preview": "vite preview",

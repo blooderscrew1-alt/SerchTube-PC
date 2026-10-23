@@ -64,6 +64,7 @@ import { HostScannerModal } from './HostScannerModal';
 import { PWAInstallBanner } from './PWAInstallBanner';
 import { NodeSyncService } from '../services/nodeSync';
 import { youtubeAuthService, GoogleAccountProfile } from '../services/youtubeAuthService';
+import { cleanQueueTrack, getTrackDisplayArtist, getTrackDisplayTitle } from '../utils/queueTracks';
 
 interface OledDrivingDashboardProps {
   playerState: PlayerState;
@@ -715,7 +716,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                 {playerState.currentTrack.thumbnail ? (
                   <img
                     src={playerState.currentTrack.thumbnail}
-                    alt={playerState.currentTrack.title}
+                    alt={getTrackDisplayTitle(playerState.currentTrack)}
                     className="w-16 h-16 rounded-xl object-cover border border-white/10 shadow-lg shrink-0"
                     referrerPolicy="no-referrer"
                   />
@@ -726,10 +727,10 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                 )}
                 <div className="min-w-0 flex-1">
                   <h3 className="text-base font-bold text-white truncate">
-                    {playerState.currentTrack.title}
+                    {getTrackDisplayTitle(playerState.currentTrack)}
                   </h3>
                   <p className="text-xs text-gray-400 truncate mt-0.5">
-                    {playerState.currentTrack.artist}
+                    {getTrackDisplayArtist(playerState.currentTrack)}
                   </p>
                 </div>
               </div>
@@ -888,7 +889,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                         {thumbUrl ? (
                           <img
                             src={thumbUrl}
-                            alt={track.title}
+                            alt={getTrackDisplayTitle(track)}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                             referrerPolicy="no-referrer"
                             loading="lazy"
@@ -917,10 +918,10 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                         <p className={`text-xs sm:text-sm font-semibold truncate ${
                           isCurrent ? 'text-red-300 font-bold' : 'text-gray-200 group-hover:text-white'
                         }`}>
-                          {track.title}
+                          {getTrackDisplayTitle(track)}
                         </p>
                         <p className="text-[11px] text-gray-400 truncate mt-0.5">
-                          {track.artist || 'YouTube'}
+                          {getTrackDisplayArtist(track)}
                         </p>
                       </div>
 
@@ -1059,12 +1060,15 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
   // Antes se reconstruia como "actual + 20 siguientes", asi que al pasar de cancion la
   // anterior desaparecia de la lista y parecia que la cola se reemplazaba por una nueva.
   const colaCompleta: Track[] = React.useMemo(() => {
-    const normalizar = (t: Track): Track => ({
-      ...t,
-      thumbnail: t.thumbnail && !t.thumbnail.includes('unsplash')
-        ? t.thumbnail
-        : (t.id ? `https://i.ytimg.com/vi/${t.id}/hqdefault.jpg` : '')
-    });
+    const normalizar = (t: Track): Track => {
+      const cleaned = cleanQueueTrack(t);
+      return {
+        ...cleaned,
+        thumbnail: cleaned.thumbnail && !cleaned.thumbnail.includes('unsplash')
+          ? cleaned.thumbnail
+          : (cleaned.id ? `https://i.ytimg.com/vi/${cleaned.id}/hqdefault.jpg` : '')
+      };
+    };
     const cola = Array.isArray(playlistQueue) ? playlistQueue.filter(t => t && t.id) : [];
     if (cola.length === 0) {
       const actual = playerState.currentTrack;
@@ -1985,7 +1989,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                                 ? playerState.currentTrack.thumbnail
                                 : `https://i.ytimg.com/vi/${playerState.currentTrack.id}/hqdefault.jpg`
                             }
-                            alt={playerState.currentTrack.title}
+                            alt={getTrackDisplayTitle(playerState.currentTrack)}
                             className="w-full h-full object-cover rounded-lg"
                             referrerPolicy="no-referrer"
                             onError={(e) => {
@@ -2001,7 +2005,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                       <div className="overflow-hidden min-w-0 flex-1">
                         <div className="flex items-center justify-between gap-2">
                           <h2 className="text-base font-bold text-white truncate min-w-0">
-                            {playerState.currentTrack?.title || "Sin pista seleccionada"}
+                            {playerState.currentTrack ? getTrackDisplayTitle(playerState.currentTrack) : "Sin pista seleccionada"}
                           </h2>
                           <div className="flex items-center gap-1 flex-shrink-0">
                             {/* Auto Zoom: conmuta los modos de la extension de Edge (solo icono) */}
@@ -2042,7 +2046,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                           </div>
                         </div>
                         <p className="text-xs text-gray-400 truncate">
-                          {playerState.currentTrack?.artist || "Di una orden para comenzar"}
+                          {playerState.currentTrack ? getTrackDisplayArtist(playerState.currentTrack) : "Di una orden para comenzar"}
                         </p>
                       </div>
                     </div>
@@ -2534,7 +2538,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                         {thumbUrl ? (
                           <img
                             src={thumbUrl}
-                            alt={track.title}
+                            alt={getTrackDisplayTitle(track)}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                             referrerPolicy="no-referrer"
                             loading="lazy"
@@ -2563,10 +2567,10 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                         <p className={`text-sm font-semibold truncate ${
                           isCurrent ? 'text-red-300 font-bold' : 'text-gray-100 group-hover:text-white'
                         }`}>
-                          {track.title}
+                          {getTrackDisplayTitle(track)}
                         </p>
                         <p className="text-xs text-gray-400 truncate mt-0.5">
-                          {track.artist || 'YouTube'}
+                          {getTrackDisplayArtist(track)}
                         </p>
                       </div>
 

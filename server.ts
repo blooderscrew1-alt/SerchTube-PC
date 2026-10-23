@@ -26,6 +26,7 @@ import {
   isValidSongTitle,
   sanitizeSongTitleAndArtist,
   isGenericArtistWord,
+  fetchVideoMetadata,
   type CatalogTrack
 } from "./youtubeEngine.ts";
 import { resolveMusicalContext, isTrackGenreCoherent } from "./musicContextEngine.ts";
@@ -2295,6 +2296,32 @@ app.get("/api/youtube/find-alternative", async (req, res) => {
     success: false,
     message: "No se encontró copia compatible de la misma canción"
   });
+});
+
+// Metadatos reales por ID de video (título/artista/duración) para reparar la cola
+// cuando la playlist nativa o la extensión solo entregan IDs o duraciones.
+app.get("/api/youtube/video-info", async (req, res) => {
+  try {
+    const rawIds = String(req.query.ids || req.query.id || "");
+    const ids = Array.from(
+      new Set(
+        rawIds
+          .split(",")
+          .map(id => id.trim())
+          .filter(id => /^[a-zA-Z0-9_-]{11}$/.test(id))
+      )
+    ).slice(0, 20);
+
+    if (ids.length === 0) return res.json({ items: [] });
+
+    const resolved = await Promise.all(ids.map(id => fetchVideoMetadata(id)));
+    const items = resolved.filter((item): item is CatalogTrack => !!item);
+
+    return res.json({ items });
+  } catch (err) {
+    console.warn("[Server /api/youtube/video-info] Error resolviendo metadatos:", err);
+    return res.json({ items: [] });
+  }
 });
 
 // Endpoint for infinite dynamic YouTube recommendations (Endless playback)

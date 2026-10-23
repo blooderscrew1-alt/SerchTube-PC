@@ -1739,3 +1739,183 @@ export async function searchYouTubeMusicSmart(
   };
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Metadatos por ID de video
+ *
+ * La cola de reproducción recibe a veces solo IDs (playlist nativa de YouTube,
+ * extensión de Edge). Sin metadatos, la UI mostraba duraciones o textos como
+ * "Canción de la lista". Este resolutor obtiene el nombre y el artista reales
+ * directamente de YouTube, con caché para no repetir peticiones.
+ * ────────────────────────────────────────────────────────────────────────── */
+
+const VIDEO_META_TTL_MS = 6 * 60 * 60 * 1000;
+const videoMetadataCache = new Map<string, { at: number; data: CatalogTrack | null }>();
+
+function secondsToDuration(totalSeconds: number): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds <= 0) return '';
+  const rounded = Math.round(totalSeconds);
+  const hours = Math.floor(rounded / 3600);
+  const minutes = Math.floor((rounded % 3600) / 60);
+  const seconds = rounded % 60;
+  const pad = (n: number) => n.toString().padStart(2, '0');
+  return hours > 0 ? `${hours}:${pad(minutes)}:${pad(seconds)}` : `${minutes}:${pad(seconds)}`;
+}
+
+/** Extrae un objeto JSON balanceado que empieza en `marker` (p. ej. "videoDetails":). */
+function extractJsonObjectAfter(source: string, marker: string): any | null {
+  const markerIdx = source.indexOf(marker);
+  if (markerIdx < 0) return null;
+  const start = source.indexOf('{', markerIdx + marker.length);
+  if (start < 0) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = start; i < source.length; i++) {
+    const ch = source[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+    } else if (ch === '{') {
+      depth++;
+    } else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(source.slice(start, i + 1));
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeVideoMetadata(videoId: string, rawTitle: string, rawArtist: string, thumbnail?: string, duration?: string): CatalogTrack | null {
+  if (!rawTitle || isDurationOnlyString(rawTitle)) return null;
+
+  // Separar "Artista - Canción" comparando sin puntuación: el canal suele venir
+  // como "DrDreVEVO" y el título como "Dr. Dre - Still D.R.E.".
+  const compareKey = (value: string) =>
+    (value || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]/g, '');
+
+  let titleInput = rawTitle.trim();
+  let artistInput = (rawArtist || '').trim();
+  if (titleInput.includes(' - ')) {
+    const parts = titleInput.split(/\s*-\s*/);
+    const possibleArtist = (parts[0] || '').trim();
+    const possibleTitle = parts.slice(1).join(' - ').trim();
+    const channelKey = compareKey(artistInput).replace(/vevo$|official$|topic$/, '');
+    const candidateKey = compareKey(possibleArtist);
+    if (
+      candidateKey.length >= 2 &&
+      possibleTitle.length >= 2 &&
+      (channelKey.includes(candidateKey) || candidateKey.includes(channelKey))
+    ) {
+      artistInput = possibleArtist;
+      titleInput = possibleTitle;
+    }
+  }
+
+  const sanitized = sanitizeSongTitleAndArtist(titleInput, artistInput);
+  const title = sanitized.title || (isValidSongTitle(titleInput) ? titleInput : '');
+  if (!title) return null;
+  const artist = sanitized.artist || artistInput;
+  return {
+    id: videoId,
+    title,
+    artist,
+    thumbnail: thumbnail || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    duration: duration || ''
+  };
+}
+
+function isDurationOnlyString(value: string): boolean {
+  const t = (value || '').trim();
+  return /^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+)\s*$/.test(t);
+}
+
+/**
+ * Obtiene título, artista, miniatura y duración reales de un video de YouTube.
+ * Usa la página del video (videoDetails) y cae a oEmbed si YouTube bloquea el HTML.
+ */
+export async function fetchVideoMetadata(videoId: string): Promise<CatalogTrack | null> {
+  if (!videoId || !/^[a-zA-Z0-9_-]{11}$/.test(videoId)) return null;
+
+  const cached = videoMetadataCache.get(videoId);
+  if (cached && Date.now() - cached.at < VIDEO_META_TTL_MS) {
+    return cached.data;
+  }
+
+  let meta: CatalogTrack | null = null;
+
+  try {
+    const response = await fetch(`https://www.youtube.com/watch?v=${videoId}&hl=es&gl=ES`, {
+      headers: {
+        'User-Agent': YOUTUBE_USER_AGENT,
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+      }
+    });
+    if (response.ok) {
+      const html = await response.text();
+      const details = extractJsonObjectAfter(html, '"videoDetails":');
+      if (details && details.title) {
+        const thumbnails = details?.thumbnail?.thumbnails;
+        const thumbnail = Array.isArray(thumbnails) && thumbnails.length > 0
+          ? thumbnails[thumbnails.length - 1]?.url
+          : undefined;
+        meta = normalizeVideoMetadata(
+          videoId,
+          String(details.title || ''),
+          String(details.author || ''),
+          thumbnail,
+          secondsToDuration(Number(details.lengthSeconds))
+        );
+      }
+    }
+  } catch (err) {
+    // Sin conexión o HTML bloqueado: se intenta oEmbed abajo.
+  }
+
+  if (!meta) {
+    try {
+      const response = await fetch(
+        `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}&format=json`,
+        { headers: { 'User-Agent': YOUTUBE_USER_AGENT, 'Accept-Language': 'es-ES,es;q=0.9' } }
+      );
+      if (response.ok) {
+        const data: any = await response.json();
+        meta = normalizeVideoMetadata(
+          videoId,
+          String(data?.title || ''),
+          String(data?.author_name || ''),
+          data?.thumbnail_url,
+          ''
+        );
+      }
+    } catch (err) {
+      // Se guarda null para no reintentar en bucle durante esta sesión.
+    }
+  }
+
+  // Solo se memorizan resultados/fracasos recientes para aliviar la carga.
+  videoMetadataCache.set(videoId, { at: Date.now(), data: meta });
+  if (videoMetadataCache.size > 500) {
+    const oldest = videoMetadataCache.keys().next().value;
+    if (oldest) videoMetadataCache.delete(oldest);
+  }
+
+  return meta;
+}
+
