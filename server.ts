@@ -23,6 +23,7 @@ import {
   isNonMusicVideo,
   isLowQualityVideo,
   findCompatibleAlternative,
+  isValidSongTitle,
   type CatalogTrack
 } from "./youtubeEngine.ts";
 import { resolveMusicalContext, isTrackGenreCoherent } from "./musicContextEngine.ts";
@@ -1982,6 +1983,43 @@ app.get("/api/google-search", async (req, res) => {
 const cacheBusquedasVoz = new Map<string, { at: number; payload: any }>();
 const TTL_BUSQUEDA_VOZ_MS = 2500;
 
+// Función para garantizar que ninguna pista con timestamp ("3:18", "5:15") o artista genérico llegue a la cola
+function sanitizeTrackList(items: CatalogTrack[], defaultArtist: string = 'Música'): CatalogTrack[] {
+  if (!Array.isArray(items)) return [];
+  const clean: CatalogTrack[] = [];
+  const seenIds = new Set<string>();
+
+  for (const t of items) {
+    if (!t || !t.id || seenIds.has(t.id)) continue;
+    if (!isValidSongTitle(t.title)) continue;
+    seenIds.add(t.id);
+
+    let title = t.title.trim();
+    let artist = (t.artist || '').trim();
+    if ((!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') && title.includes(' - ')) {
+      const parts = title.split(/\s*-\s*/);
+      if (parts.length >= 2 && parts[0].trim().length >= 2) {
+        artist = parts[0].trim();
+        title = parts.slice(1).join(' - ').trim();
+      }
+    }
+    if (!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') {
+      artist = defaultArtist;
+    }
+
+    clean.push({
+      ...t,
+      title: title || t.title,
+      artist,
+      thumbnail: t.thumbnail && !t.thumbnail.includes('unsplash')
+        ? t.thumbnail
+        : `https://i.ytimg.com/vi/${t.id}/hqdefault.jpg`,
+      duration: t.duration || '3:45'
+    });
+  }
+  return clean;
+}
+
 app.get("/api/youtube/search", async (req, res) => {
   const query = (req.query.q as string || "").trim();
   const isArtistOnly = req.query.isArtist === "true";
@@ -2013,18 +2051,15 @@ app.get("/api/youtube/search", async (req, res) => {
   try {
     const porGoogle = await searchGoogleForVideo(query, isArtistOnly);
     if (porGoogle && porGoogle.items && porGoogle.items.length > 0) {
-      console.log(`[Búsqueda] 🎯 Google.com Videos proporcionó: "${porGoogle.title}" (${porGoogle.videoId}) para la frase "${query}"`);
-      return responder({
-        source: 'google_youtube',
-        firstTrack: {
-          id: porGoogle.videoId,
-          title: porGoogle.title,
-          artist: porGoogle.artist,
-          thumbnail: porGoogle.thumbnail,
-          duration: porGoogle.duration
-        },
-        items: porGoogle.items
-      });
+      const cleanItems = sanitizeTrackList(porGoogle.items, porGoogle.artist || query);
+      if (cleanItems.length > 0) {
+        console.log(`[Búsqueda] 🎯 Google.com Videos proporcionó: "${cleanItems[0].title}" (${cleanItems[0].id}) para la frase "${query}"`);
+        return responder({
+          source: 'google_youtube',
+          firstTrack: cleanItems[0],
+          items: cleanItems
+        });
+      }
     }
   } catch (err) {
     console.warn("[Búsqueda] Error al consultar Google Videos:", err);
@@ -2034,11 +2069,14 @@ app.get("/api/youtube/search", async (req, res) => {
   try {
     const inteligente = await searchYouTubeMusicSmart(query, isArtistOnly);
     if (inteligente && inteligente.items && inteligente.items.length > 0) {
-      return responder({
-        source: inteligente.source || 'youtube_direct',
-        firstTrack: inteligente.firstTrack || inteligente.items[0],
-        items: inteligente.items
-      });
+      const cleanItems = sanitizeTrackList(inteligente.items, query);
+      if (cleanItems.length > 0) {
+        return responder({
+          source: inteligente.source || 'youtube_direct',
+          firstTrack: cleanItems[0],
+          items: cleanItems
+        });
+      }
     }
   } catch (err) {
     console.warn("[Búsqueda] Fallback de YouTube inteligente:", err);
@@ -2047,11 +2085,14 @@ app.get("/api/youtube/search", async (req, res) => {
   try {
     const result = await searchYouTubeMusic(query, isArtistOnly);
     if (result && result.items && result.items.length > 0) {
-      return res.json({
-        source: result.source,
-        firstTrack: result.firstTrack,
-        items: result.items
-      });
+      const cleanItems = sanitizeTrackList(result.items, query);
+      if (cleanItems.length > 0) {
+        return res.json({
+          source: result.source,
+          firstTrack: cleanItems[0],
+          items: cleanItems
+        });
+      }
     }
   } catch (err) {
     console.warn("YouTube live search proxy fallback error:", err);
@@ -2301,7 +2342,7 @@ app.get("/api/youtube/related", async (req, res) => {
     if (videoId) seen.add(videoId);
 
     for (const t of candidatePool) {
-      if (!t.id || seen.has(t.id) || isCompilationOrMix(t.title) || isLowQualityVideo(t.title, t.artist)) continue;
+      if (!t.id || seen.has(t.id) || !isValidSongTitle(t.title) || isCompilationOrMix(t.title) || isLowQualityVideo(t.title, t.artist)) continue;
 
       // Filtrar por coherencia estricta de género
       if (!isTrackGenreCoherent(t, context)) continue;
@@ -2320,10 +2361,27 @@ app.get("/api/youtube/related", async (req, res) => {
       if (isRepeat) continue;
 
       seen.add(t.id);
+      let tTitle = t.title.trim();
+      let tArtist = (t.artist || '').trim();
+      if ((!tArtist || tArtist.toLowerCase() === 'artista' || tArtist.toLowerCase() === 'youtube') && tTitle.includes(' - ')) {
+        const parts = tTitle.split(/\s*-\s*/);
+        if (parts.length >= 2 && parts[0].trim().length >= 2) {
+          tArtist = parts[0].trim();
+          tTitle = parts.slice(1).join(' - ').trim();
+        }
+      }
+      if (!tArtist || tArtist.toLowerCase() === 'artista' || tArtist.toLowerCase() === 'youtube') {
+        tArtist = mainArtist;
+      }
+
       unique.push({
         ...t,
-        artist: t.artist || mainArtist,
-        thumbnail: t.thumbnail || `https://i.ytimg.com/vi/${t.id}/hqdefault.jpg`
+        title: tTitle || t.title,
+        artist: tArtist,
+        thumbnail: t.thumbnail && !t.thumbnail.includes('unsplash')
+          ? t.thumbnail
+          : `https://i.ytimg.com/vi/${t.id}/hqdefault.jpg`,
+        duration: t.duration || '3:45'
       });
       if (unique.length >= 35) break;
     }

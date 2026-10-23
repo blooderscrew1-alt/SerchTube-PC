@@ -108,6 +108,43 @@ export function cleanSearchQuery(raw: string): string {
 }
 
 /**
+ * Valida exhaustivamente que un título sea un nombre real de canción o video musical,
+ * descartando rigurosamente duraciones / timestamps ("3:18", "05:15", "1:02:40"),
+ * números aislados, URLs o textos genéricos de marcadores de posición ("Canción", "Video", "Artista").
+ */
+export function isValidSongTitle(title: string | undefined | null): boolean {
+  if (!title || typeof title !== 'string') return false;
+  let t = title.trim();
+  if (t.length < 2) return false;
+
+  // Eliminar prefijos de número de pista al inicio para validar
+  t = t.replace(/^(?:#?\d+[\s.-]*)+/, "").trim();
+  if (t.length < 2) return false;
+
+  // 1. Rechazar timestamps, duraciones o códigos de tiempo puros: "3:18", "03:18", "1:05:15", "0:45", etc.
+  if (/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+|\d+\s*:\s*\d+)\s*(?:\/\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+))?\s*$/i.test(t)) return false;
+
+  // 2. Rechazar duraciones con sufijos: "3:18 min", "4 mins", "120 seg", "5m 15s"
+  if (/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+)\s*(?:min|mins|seg|segundos|seconds|sec|s|m)\b/i.test(t)) return false;
+
+  // 3. Rechazar cadenas que sean solo números
+  if (/^\d+$/.test(t)) return false;
+
+  // 4. Rechazar URLs o enlaces web
+  if (/^https?:\/\/|^www\./i.test(t) || t.includes('youtube.com') || t.includes('youtu.be')) return false;
+
+  // 5. Rechazar palabras genéricas y marcadores de posición
+  const lower = t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const genericPlaceholders = new Set([
+    'cancion', 'video', 'audio', 'youtube', 'artista', 'artist',
+    'musica', 'desconocido', 'unknown', 'null', 'undefined', 'reproducir', 'reproduce', 'play', 'track'
+  ]);
+  if (genericPlaceholders.has(lower)) return false;
+
+  return true;
+}
+
+/**
  * Limpia el título de un video para comparar similitud de canciones
  */
 export function cleanTitleForComparison(title: string): string {
@@ -604,23 +641,33 @@ export async function scrapeYouTubeVideos(
                 // 1. Classic videoRenderer
                 const vr = item?.videoRenderer;
                 if (vr && vr.videoId && !seenIds.has(vr.videoId)) {
-                  seenIds.add(vr.videoId);
-                  const title = vr.title?.runs?.[0]?.text || vr.title?.simpleText || searchQuery;
-                  const artist =
-                    vr.ownerText?.runs?.[0]?.text ||
-                    vr.shortBylineText?.runs?.[0]?.text ||
-                    "";
-                  const duration =
-                    vr.lengthText?.simpleText || vr.lengthText?.runs?.[0]?.text || "3:45";
+                  const rawTitle = vr.title?.runs?.[0]?.text || vr.title?.simpleText || "";
+                  if (isValidSongTitle(rawTitle)) {
+                    seenIds.add(vr.videoId);
+                    let title = rawTitle.trim();
+                    let artist =
+                      vr.ownerText?.runs?.[0]?.text ||
+                      vr.shortBylineText?.runs?.[0]?.text ||
+                      "";
+                    if ((!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') && title.includes(' - ')) {
+                      const parts = title.split(/\s*-\s*/);
+                      if (parts.length >= 2 && parts[0].trim().length >= 2) {
+                        artist = parts[0].trim();
+                        title = parts.slice(1).join(' - ').trim();
+                      }
+                    }
+                    const duration =
+                      vr.lengthText?.simpleText || vr.lengthText?.runs?.[0]?.text || "3:45";
 
-                  items.push({
-                    id: vr.videoId,
-                    title,
-                    artist,
-                    thumbnail: `https://i.ytimg.com/vi/${vr.videoId}/hqdefault.jpg`,
-                    duration
-                  });
-                  if (items.length >= maxResults) break;
+                    items.push({
+                      id: vr.videoId,
+                      title: title || rawTitle,
+                      artist,
+                      thumbnail: `https://i.ytimg.com/vi/${vr.videoId}/hqdefault.jpg`,
+                      duration
+                    });
+                    if (items.length >= maxResults) break;
+                  }
                 }
 
                 // 2. Modern lockupViewModel (usado en YouTube 2024-2026)
@@ -629,24 +676,34 @@ export async function scrapeYouTubeVideos(
                   const videoId =
                     vm.rendererContext?.commandContext?.onTap?.innertubeCommand?.watchEndpoint?.videoId;
                   if (videoId && !seenIds.has(videoId)) {
-                    seenIds.add(videoId);
-                    const title =
-                      vm.metadata?.lockupMetadataViewModel?.title?.content || searchQuery;
-                    const artist =
-                      vm.metadata?.lockupMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text?.content ||
-                      "";
-                    const duration =
-                      vm.contentImage?.thumbnailViewModel?.overlays?.[0]?.thumbnailOverlayBadgeViewModel?.thumbnailBadges?.[0]?.thumbnailBadgeViewModel?.text ||
-                      "3:45";
+                    const rawTitle =
+                      vm.metadata?.lockupMetadataViewModel?.title?.content || "";
+                    if (isValidSongTitle(rawTitle)) {
+                      seenIds.add(videoId);
+                      let title = rawTitle.trim();
+                      let artist =
+                        vm.metadata?.lockupMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text?.content ||
+                        "";
+                      if ((!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') && title.includes(' - ')) {
+                        const parts = title.split(/\s*-\s*/);
+                        if (parts.length >= 2 && parts[0].trim().length >= 2) {
+                          artist = parts[0].trim();
+                          title = parts.slice(1).join(' - ').trim();
+                        }
+                      }
+                      const duration =
+                        vm.contentImage?.thumbnailViewModel?.overlays?.[0]?.thumbnailOverlayBadgeViewModel?.thumbnailBadges?.[0]?.thumbnailBadgeViewModel?.text ||
+                        "3:45";
 
-                    items.push({
-                      id: videoId,
-                      title,
-                      artist,
-                      thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                      duration
-                    });
-                    if (items.length >= maxResults) break;
+                      items.push({
+                        id: videoId,
+                        title: title || rawTitle,
+                        artist,
+                        thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                        duration
+                      });
+                      if (items.length >= maxResults) break;
+                    }
                   }
                 }
               }
@@ -714,15 +771,35 @@ export async function scrapeYouTubeMix(videoId: string): Promise<CatalogTrack[]>
         const item = it.playlistPanelVideoRenderer;
         if (item && item.videoId && !seenIds.has(item.videoId)) {
           const id = item.videoId;
-          const title = item.title?.simpleText || item.title?.runs?.[0]?.text || "";
-          if (isLowQualityVideo(title)) continue;
+          const rawTitle =
+            (Array.isArray(item.title?.runs) ? item.title.runs.map((r: any) => r?.text || '').join('') : '') ||
+            item.title?.simpleText ||
+            item.title?.runs?.[0]?.text ||
+            "";
+          if (!isValidSongTitle(rawTitle)) continue;
+          if (isLowQualityVideo(rawTitle)) continue;
+
           seenIds.add(item.videoId);
-          const artist =
-            item.shortBylineText?.simpleText || item.shortBylineText?.runs?.[0]?.text || "";
-          const duration = item.lengthText?.simpleText || "3:45";
+          let title = rawTitle.trim();
+          let artist =
+            (Array.isArray(item.shortBylineText?.runs) ? item.shortBylineText.runs.map((r: any) => r?.text || '').join('') : '') ||
+            item.shortBylineText?.simpleText ||
+            item.shortBylineText?.runs?.[0]?.text ||
+            "";
+          if ((!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') && title.includes(' - ')) {
+            const parts = title.split(/\s*-\s*/);
+            if (parts.length >= 2 && parts[0].trim().length >= 2) {
+              artist = parts[0].trim();
+              title = parts.slice(1).join(' - ').trim();
+            }
+          }
+          if (!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') {
+            artist = 'Música';
+          }
+          const duration = item.lengthText?.simpleText || item.lengthText?.runs?.[0]?.text || "3:45";
           tracks.push({
             id,
-            title,
+            title: title || rawTitle,
             artist,
             thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
             duration
@@ -768,15 +845,23 @@ export async function scrapeYouTubePlaylist(playlistId: string): Promise<Catalog
         if (vm) {
           const id =
             vm.rendererContext?.commandContext?.onTap?.innertubeCommand?.watchEndpoint?.videoId;
-          const title = vm.metadata?.lockupMetadataViewModel?.title?.content;
-          const artist =
-            vm.metadata?.lockupMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text?.content ||
-            "";
-          if (id && title && !seenIds.has(id)) {
+          const rawTitle = vm.metadata?.lockupMetadataViewModel?.title?.content;
+          if (id && isValidSongTitle(rawTitle) && !seenIds.has(id)) {
             seenIds.add(id);
+            let title = rawTitle.trim();
+            let artist =
+              vm.metadata?.lockupMetadataViewModel?.metadataRows?.[0]?.metadataParts?.[0]?.text?.content ||
+              "";
+            if ((!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') && title.includes(' - ')) {
+              const parts = title.split(/\s*-\s*/);
+              if (parts.length >= 2 && parts[0].trim().length >= 2) {
+                artist = parts[0].trim();
+                title = parts.slice(1).join(' - ').trim();
+              }
+            }
             tracks.push({
               id,
-              title,
+              title: title || rawTitle,
               artist,
               thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
               duration: "3:45"
@@ -785,15 +870,23 @@ export async function scrapeYouTubePlaylist(playlistId: string): Promise<Catalog
         }
         const vr = it.playlistVideoRenderer;
         if (vr && vr.videoId && !seenIds.has(vr.videoId)) {
-          seenIds.add(vr.videoId);
           const id = vr.videoId;
-          const title = vr.title?.runs?.[0]?.text || vr.title?.simpleText || "";
-          const artist = vr.shortBylineText?.runs?.[0]?.text || "";
-          const duration = vr.lengthText?.simpleText || "3:45";
-          if (id && title) {
+          const rawTitle = vr.title?.runs?.[0]?.text || vr.title?.simpleText || "";
+          if (id && isValidSongTitle(rawTitle)) {
+            seenIds.add(vr.videoId);
+            let title = rawTitle.trim();
+            let artist = vr.shortBylineText?.runs?.[0]?.text || "";
+            if ((!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') && title.includes(' - ')) {
+              const parts = title.split(/\s*-\s*/);
+              if (parts.length >= 2 && parts[0].trim().length >= 2) {
+                artist = parts[0].trim();
+                title = parts.slice(1).join(' - ').trim();
+              }
+            }
+            const duration = vr.lengthText?.simpleText || "3:45";
             tracks.push({
               id,
-              title,
+              title: title || rawTitle,
               artist,
               thumbnail: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
               duration
@@ -868,14 +961,12 @@ export async function searchYouTubePlaylistId(query: string): Promise<string | n
 export async function buildArtistAndMixPlaylist(
   topTrack: CatalogTrack,
   query: string = '',
-  isArtistOnly: boolean = false
+  isArtistOnly: boolean = false,
+  extraCandidates: CatalogTrack[] = []
 ): Promise<CatalogTrack[]> {
-  const fullPlaylist: CatalogTrack[] = [topTrack];
-  const seenIds = new Set<string>([topTrack.id]);
-
   // 1. Deducir y limpiar el nombre del artista principal
   let candidateArtist = (topTrack.artist || '').trim();
-  const rawTitle = topTrack.title || '';
+  let rawTitle = (topTrack.title || '').trim();
 
   // Limpiar sufijos típicos de canales de YouTube en el artista
   candidateArtist = candidateArtist
@@ -890,14 +981,15 @@ export async function buildArtistAndMixPlaylist(
     const possibleArtist = parts[0].trim();
     if (
       possibleArtist.length >= 2 &&
-      (!candidateArtist || candidateArtist.toLowerCase() === 'youtube' || candidateArtist.toLowerCase().includes('cancion'))
+      (!candidateArtist || candidateArtist.toLowerCase() === 'artista' || candidateArtist.toLowerCase() === 'youtube' || candidateArtist.toLowerCase().includes('cancion'))
     ) {
       candidateArtist = possibleArtist;
+      rawTitle = parts.slice(1).join(' - ').trim();
     }
   }
 
   // Si aún no tenemos artista claro, intentar extraer de la consulta de búsqueda
-  if (!candidateArtist || candidateArtist.toLowerCase() === 'youtube') {
+  if (!candidateArtist || candidateArtist.toLowerCase() === 'artista' || candidateArtist.toLowerCase() === 'youtube') {
     const parts = query.split(/\s*-\s*|\s+de\s+|\s+por\s+/i);
     if (parts.length > 1) {
       candidateArtist = parts[parts.length - 1].trim();
@@ -906,7 +998,20 @@ export async function buildArtistAndMixPlaylist(
     }
   }
 
-  console.log(`[ArtistMixEngine] 🎵 Generando cola de artista y YouTube Mix para: "${topTrack.title}" (${topTrack.id}) - Artista: "${candidateArtist}"`);
+  // Sanitizar pista #1
+  const cleanTopTrack: CatalogTrack = {
+    ...topTrack,
+    title: rawTitle || topTrack.title,
+    artist: candidateArtist || topTrack.artist || 'Música',
+    thumbnail: topTrack.thumbnail && !topTrack.thumbnail.includes('unsplash')
+      ? topTrack.thumbnail
+      : `https://i.ytimg.com/vi/${topTrack.id}/hqdefault.jpg`
+  };
+
+  const fullPlaylist: CatalogTrack[] = [cleanTopTrack];
+  const seenIds = new Set<string>([topTrack.id]);
+
+  console.log(`[ArtistMixEngine] 🎵 Generando cola de artista y YouTube Mix para: "${cleanTopTrack.title}" (${cleanTopTrack.id}) - Artista: "${cleanTopTrack.artist}"`);
 
   try {
     // 2. Obtener en paralelo:
@@ -926,10 +1031,12 @@ export async function buildArtistAndMixPlaylist(
     // Pool de candidatos priorizando:
     // 1) Más canciones del mismo artista (para reproducir la discografía / lista del artista)
     // 2) YouTube Mix oficial de la pista #1
+    // 3) Candidatos adicionales de Google Videos / alternativas
     const candidatePool = [
       ...artistHits1,
       ...artistHits2,
-      ...mixTracks
+      ...mixTracks,
+      ...extraCandidates
     ];
 
     // Helper local para extraer título base de la canción
@@ -938,17 +1045,20 @@ export async function buildArtistAndMixPlaylist(
       return (part || cleanTitleForComparison(t)).replace(/[^a-z0-9]/g, '');
     };
 
-    const topSongKey = cleanSongPart(topTrack.title);
+    const topSongKey = cleanSongPart(cleanTopTrack.title);
 
     for (const item of candidatePool) {
       if (!item || !item.id || seenIds.has(item.id)) continue;
+      // 🛡️ REGLA DE ORO ANTI-DURACIONES Y NOMBRES RAROS:
+      // Jamás admitir duraciones / timestamps ("3:18", "5:15") ni títulos genéricos
+      if (!isValidSongTitle(item.title)) continue;
       if (isNonMusicVideo(item.title, item.duration)) continue;
       if (isLowQualityVideo(item.title, item.artist)) continue;
       if (isCompilationOrMix(item.title)) continue;
 
       // 🛡️ REGLA DE ORO ANTI-REPETICIÓN:
       // Jamás añadir la MISMA canción que la pista #1 bajo otro título o canal
-      if (areSameSong(item.title, topTrack.title, query)) continue;
+      if (areSameSong(item.title, cleanTopTrack.title, query)) continue;
 
       // Comparación estricta de parte de canción
       const itemSongKey = cleanSongPart(item.title);
@@ -972,10 +1082,29 @@ export async function buildArtistAndMixPlaylist(
       if (isRepeatInQueue) continue;
 
       seenIds.add(item.id);
+
+      // Normalizar artista y título: si el título viene como "Artista - Canción", separar limpiamente
+      let itemTitle = item.title.trim();
+      let itemArtist = (item.artist || '').trim();
+      if ((!itemArtist || itemArtist.toLowerCase() === 'artista' || itemArtist.toLowerCase() === 'youtube') && itemTitle.includes(' - ')) {
+        const parts = itemTitle.split(/\s*-\s*/);
+        if (parts.length >= 2 && parts[0].trim().length >= 2) {
+          itemArtist = parts[0].trim();
+          itemTitle = parts.slice(1).join(' - ').trim();
+        }
+      }
+      if (!itemArtist || itemArtist.toLowerCase() === 'artista' || itemArtist.toLowerCase() === 'youtube') {
+        itemArtist = candidateArtist || cleanTopTrack.artist || 'Música';
+      }
+
       fullPlaylist.push({
         ...item,
-        artist: item.artist || candidateArtist,
-        thumbnail: item.thumbnail || `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`
+        title: itemTitle || item.title,
+        artist: itemArtist,
+        thumbnail: item.thumbnail && !item.thumbnail.includes('unsplash')
+          ? item.thumbnail
+          : `https://i.ytimg.com/vi/${item.id}/hqdefault.jpg`,
+        duration: item.duration || '3:45'
       });
 
       if (fullPlaylist.length >= 35) break;
@@ -1064,7 +1193,7 @@ export async function searchYouTubeMusic(
       const seen = new Set<string>();
 
       for (const t of candidatePool) {
-        if (!t.id || seen.has(t.id) || isCompilationOrMix(t.title) || isLowQualityVideo(t.title, t.artist)) continue;
+        if (!t.id || seen.has(t.id) || !isValidSongTitle(t.title) || isCompilationOrMix(t.title) || isLowQualityVideo(t.title, t.artist)) continue;
 
         // Filtro de coherencia de género para descartar pistas incompatibles
         if (!isTrackGenreCoherent(t, context)) continue;
@@ -1080,9 +1209,19 @@ export async function searchYouTubeMusic(
         if (isRepeat) continue;
 
         seen.add(t.id);
+        let tTitle = t.title.trim();
+        let tArtist = (t.artist || '').trim();
+        if ((!tArtist || tArtist.toLowerCase() === 'artista' || tArtist.toLowerCase() === 'youtube') && tTitle.includes(' - ')) {
+          const parts = tTitle.split(/\s*-\s*/);
+          if (parts.length >= 2 && parts[0].trim().length >= 2) {
+            tArtist = parts[0].trim();
+            tTitle = parts.slice(1).join(' - ').trim();
+          }
+        }
         uniqueQueue.push({
           ...t,
-          artist: t.artist || mainArtist
+          title: tTitle || t.title,
+          artist: tArtist || mainArtist
         });
         if (uniqueQueue.length >= 40) break;
       }
@@ -1150,7 +1289,7 @@ export async function searchYouTubeMusic(
       ];
 
       for (const t of candidatePool) {
-        if (!t.id || seenIds.has(t.id) || isCompilationOrMix(t.title) || isLowQualityVideo(t.title, t.artist)) continue;
+        if (!t.id || seenIds.has(t.id) || !isValidSongTitle(t.title) || isCompilationOrMix(t.title) || isLowQualityVideo(t.title, t.artist)) continue;
 
         // Filtro estricto de género y coherencia musical
         if (!isTrackGenreCoherent(t, context)) continue;
@@ -1169,9 +1308,19 @@ export async function searchYouTubeMusic(
         if (isRepeat) continue;
 
         seenIds.add(t.id);
+        let tTitle = t.title.trim();
+        let tArtist = (t.artist || '').trim();
+        if ((!tArtist || tArtist.toLowerCase() === 'artista' || tArtist.toLowerCase() === 'youtube') && tTitle.includes(' - ')) {
+          const parts = tTitle.split(/\s*-\s*/);
+          if (parts.length >= 2 && parts[0].trim().length >= 2) {
+            tArtist = parts[0].trim();
+            tTitle = parts.slice(1).join(' - ').trim();
+          }
+        }
         finalPlaylist.push({
           ...t,
-          artist: t.artist || candidateArtist
+          title: tTitle || t.title,
+          artist: tArtist || candidateArtist
         });
 
         if (finalPlaylist.length >= 40) break;
@@ -1425,7 +1574,7 @@ export async function searchYouTubeMusicSmart(
     anotar(`variante "${variante.texto}" (${variante.origen}): ${resultado.items.length} candidatos`);
 
     resultado.items.forEach((item, idx) => {
-      if (!item || !item.id) return;
+      if (!item || !item.id || !isValidSongTitle(item.title)) return;
       if (!idsVistos.has(item.id)) { idsVistos.add(item.id); pool.push(item); }
       const base = scoreCandidateVideo(item, variante.texto, idx);
       const ctx = bonificacionContexto(item, {

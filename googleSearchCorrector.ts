@@ -13,6 +13,7 @@ import {
   buildArtistAndMixPlaylist,
   hasAgeRestrictionMarkers,
   isYouTubeVideoRestricted,
+  isValidSongTitle,
   type CatalogTrack
 } from './youtubeEngine.ts';
 import { resolveMusicalContext } from './musicContextEngine.ts';
@@ -643,13 +644,21 @@ export async function scrapeGoogleVideosSection(
     }
 
     const text = await res.text();
-    const re = /<a[^>]*href=\"([^\"]*)\"[^>]*>([\s\S]*?)<\/a>/gi;
-    const items: CatalogTrack[] = [];
-    const seen = new Set<string>();
-    let match;
+    // Expresión regular que tolera comillas simples, dobles o sin comillas en href
+    const re = /<a\s+[^>]*?href=([\"\']?)([^\"\'\s>]+)\1[^>]*>([\s\S]*?)<\/a>/gi;
 
+    // Agrupar por videoId para unificar los badges de duración y los encabezados con el título real
+    const videoMap = new Map<string, {
+      id: string;
+      title: string;
+      artist: string;
+      duration: string;
+      thumbnail: string;
+    }>();
+
+    let match;
     while ((match = re.exec(text)) !== null) {
-      const rawHref = match[1].replace(/&amp;/g, '&');
+      const rawHref = match[2].replace(/&amp;/g, '&');
       const decodedHref = decodeURIComponent(rawHref);
 
       if (!decodedHref.includes('youtube.com/watch') && !decodedHref.includes('youtu.be/')) {
@@ -659,44 +668,85 @@ export async function scrapeGoogleVideosSection(
       const mId = decodedHref.match(/(?:watch\?v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/);
       if (!mId) continue;
       const videoId = mId[1];
-      if (seen.has(videoId)) continue;
 
-      const rawTitle = match[2].replace(/<[^>]+>/g, '').trim();
-      if (!rawTitle || rawTitle.length < 2 || rawTitle.toLowerCase().startsWith('http')) continue;
+      const rawText = match[3].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+      if (!rawText || rawText.toLowerCase().startsWith('http')) continue;
 
-      seen.add(videoId);
-      const cleanTitle = rawTitle
-        .replace(/\s*-\s*YouTube.*$/i, '')
-        .replace(/www\.youtube\.com.*$/i, '')
-        .replace(/^[0-9]+:\s*/, '')
-        .trim();
+      // 🛡️ DETECCIÓN DE DURACIÓN / TIMESTAMP: Si el texto dentro del enlace es solo un minutero ("3:18", "05:15", "1:02:40", "3:18 min")
+      // se asigna como 'duration', PERO JAMÁS se utiliza como título de la canción.
+      const isTimestamp =
+        /^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+|\d+\s*:\s*\d+)\s*$/.test(rawText) ||
+        /^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+)\s*(?:min|mins|seg|s|m)\b/i.test(rawText);
 
-      // Descartar contenido no musical evidente (podcasts, gameplays) y videos de baja resolución
-      if (isNonMusicVideo(cleanTitle)) continue;
-      if (/\b(?:240p|360p|144p|low\s*quality|low\s*res|baja\s*calidad)\b/i.test(cleanTitle)) continue;
+      if (!videoMap.has(videoId)) {
+        videoMap.set(videoId, {
+          id: videoId,
+          title: '',
+          artist: '',
+          duration: isTimestamp ? rawText : '3:45',
+          thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`
+        });
+      }
 
-      let title = cleanTitle;
-      let artist = '';
-      if (cleanTitle.includes(' - ')) {
-        const parts = cleanTitle.split(' - ');
-        artist = parts[0].trim();
-        title = parts.slice(1).join(' - ').trim();
-      } else {
+      const entry = videoMap.get(videoId)!;
+
+      if (isTimestamp) {
+        entry.duration = rawText;
+        continue;
+      }
+
+      // Si es un título válido (no duración, no URL, no comodín genérico)
+      if (isValidSongTitle(rawText)) {
+        const cleanTitle = rawText
+          .replace(/\s*-\s*YouTube.*$/i, '')
+          .replace(/www\.youtube\.com.*$/i, '')
+          .replace(/^[0-9]+:\s*/, '')
+          .trim();
+
+        if (cleanTitle.length >= 2 && !isNonMusicVideo(cleanTitle)) {
+          // Si aún no tenemos título o este nuevo título es más largo/descriptivo
+          if (!entry.title || cleanTitle.length > entry.title.length) {
+            let title = cleanTitle;
+            let artist = '';
+            if (cleanTitle.includes(' - ')) {
+              const parts = cleanTitle.split(/\s*-\s*/);
+              if (parts.length >= 2 && parts[0].trim().length >= 2) {
+                artist = parts[0].trim();
+                title = parts.slice(1).join(' - ').trim();
+              }
+            }
+            entry.title = title || cleanTitle;
+            if (artist) entry.artist = artist;
+            else if (!entry.artist) entry.artist = query;
+          }
+        }
+      }
+    }
+
+    const items: CatalogTrack[] = [];
+    for (const v of videoMap.values()) {
+      // 🛡️ REGLA ESTRICTA: Descartar si el título quedó vacío o no es un título válido de canción
+      if (!v.title || !isValidSongTitle(v.title)) continue;
+      if (isNonMusicVideo(v.title)) continue;
+      if (/\b(?:240p|360p|144p|low\s*quality|low\s*res|baja\s*calidad)\b/i.test(v.title)) continue;
+
+      let artist = v.artist.trim();
+      if (!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') {
         artist = query;
       }
 
       items.push({
-        id: videoId,
-        title: title || cleanTitle,
-        artist: artist || 'YouTube',
-        thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-        duration: '3:45'
+        id: v.id,
+        title: v.title,
+        artist,
+        thumbnail: v.thumbnail,
+        duration: v.duration || '3:45'
       });
 
       if (items.length >= limit) break;
     }
 
-    console.log(`[GoogleVideos] ✅ Google Videos devolvió ${items.length} videos musicales de YouTube para "${query}".`);
+    console.log(`[GoogleVideos] ✅ Google Videos devolvió ${items.length} videos musicales válidos para "${query}".`);
     return items;
   } catch (err: any) {
     clearTimeout(timer);
@@ -744,9 +794,10 @@ export async function searchGoogleForVideo(
 
     console.log(`[GoogleSearch] 🎯 Video musical resuelto en Google Videos #1: "${topTrack.title}" (${topTrack.id}) - Artista: "${topTrack.artist}"`);
 
-    // Construir la cola continua con la lista de reproducción del artista y YouTube Mix
-    // asegurando que la pista #1 suene primero y las siguientes sean otras canciones del artista / radio
-    const fullPlaylist = await buildArtistAndMixPlaylist(topTrack, query, isArtistOnly);
+    // Construir la cola continua con la lista de reproducción del artista y YouTube Mix,
+    // pasando los otros videos válidos de Google como candidatos adicionales
+    const otherGoogleVideos = googleVideos.filter(v => v.id !== topTrack.id);
+    const fullPlaylist = await buildArtistAndMixPlaylist(topTrack, query, isArtistOnly, otherGoogleVideos);
 
     return {
       videoId: topTrack.id,

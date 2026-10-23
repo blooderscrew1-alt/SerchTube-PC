@@ -1,6 +1,6 @@
 import { WebSocket } from 'ws';
 import { distance } from 'fastest-levenshtein';
-import { searchYouTubeMusic, cleanSearchQuery as cleanQueryEngine, type CatalogTrack } from './youtubeEngine.ts';
+import { searchYouTubeMusic, cleanSearchQuery as cleanQueryEngine, isValidSongTitle, type CatalogTrack } from './youtubeEngine.ts';
 import { searchGoogleForVideo, correctQueryWithGoogle } from './googleSearchCorrector.ts';
 
 // ============================================================================
@@ -1274,21 +1274,69 @@ export class CommandDispatcher {
             ? {
                 videoId: directVideoId,
                 title: payloadAny.title || payloadAny.command?.title || queryToSearch,
-                artist: payloadAny.artist || payloadAny.command?.artist || 'Artista',
+                artist: payloadAny.artist || payloadAny.command?.artist || '',
                 thumbnail: payloadAny.thumbnail || payloadAny.command?.thumbnail || `https://i.ytimg.com/vi/${directVideoId}/hqdefault.jpg`,
                 duration: payloadAny.duration || '3:45',
                 items: payloadAny.items
               }
             : await searchYouTubeVideo(queryToSearch);
           if (video) {
+            let cleanTitle = (video.title || '').trim();
+            let cleanArtist = (video.artist || '').trim();
+            if ((!cleanArtist || cleanArtist.toLowerCase() === 'artista' || cleanArtist.toLowerCase() === 'youtube') && cleanTitle.includes(' - ')) {
+              const parts = cleanTitle.split(/\s*-\s*/);
+              if (parts.length >= 2 && parts[0].trim().length >= 2) {
+                cleanArtist = parts[0].trim();
+                cleanTitle = parts.slice(1).join(' - ').trim();
+              }
+            }
+            if (!cleanArtist || cleanArtist.toLowerCase() === 'artista') {
+              cleanArtist = queryToSearch || 'Música';
+            }
+
+            const cleanItems: CatalogTrack[] = [];
+            const seenIds = new Set<string>();
+            if (Array.isArray(video.items)) {
+              for (const it of video.items) {
+                if (!it || !it.id || seenIds.has(it.id)) continue;
+                if (!isValidSongTitle(it.title)) continue;
+                seenIds.add(it.id);
+
+                let itTitle = it.title.trim();
+                let itArtist = (it.artist || '').trim();
+                if ((!itArtist || itArtist.toLowerCase() === 'artista' || itArtist.toLowerCase() === 'youtube') && itTitle.includes(' - ')) {
+                  const parts = itTitle.split(/\s*-\s*/);
+                  if (parts.length >= 2 && parts[0].trim().length >= 2) {
+                    itArtist = parts[0].trim();
+                    itTitle = parts.slice(1).join(' - ').trim();
+                  }
+                }
+                if (!itArtist || itArtist.toLowerCase() === 'artista') {
+                  itArtist = cleanArtist;
+                }
+
+                cleanItems.push({
+                  ...it,
+                  title: itTitle || it.title,
+                  artist: itArtist,
+                  thumbnail: it.thumbnail && !it.thumbnail.includes('unsplash')
+                    ? it.thumbnail
+                    : `https://i.ytimg.com/vi/${it.id}/hqdefault.jpg`,
+                  duration: it.duration || '3:45'
+                });
+              }
+            }
+
             const browserPayload: PlayerBrowserEvent = {
               event: 'LOAD_VIDEO',
               videoId: video.videoId,
-              title: video.title,
-              artist: video.artist,
-              thumbnail: video.thumbnail,
-              duration: video.duration,
-              items: video.items,
+              title: cleanTitle || video.title,
+              artist: cleanArtist,
+              thumbnail: video.thumbnail && !video.thumbnail.includes('unsplash')
+                ? video.thumbnail
+                : `https://i.ytimg.com/vi/${video.videoId}/hqdefault.jpg`,
+              duration: video.duration || '3:45',
+              items: cleanItems.length > 0 ? cleanItems : undefined,
               nodeId,
               fromNode: nodeName,
               timestamp: Date.now()
@@ -1298,7 +1346,7 @@ export class CommandDispatcher {
             this.dispatchToBrowserPlayer(room, browserPayload, clientsMap, broadcastToRoom);
 
             // Confirmación Inmediata (ACK) para poner la app Android en verde
-            const songName = video.artist ? `${video.artist} - ${video.title}` : video.title;
+            const songName = cleanArtist && cleanArtist !== 'Música' ? `${cleanArtist} - ${cleanTitle}` : cleanTitle;
             this.sendAck(senderWs, {
               type: 'command_ack',
               success: true,
