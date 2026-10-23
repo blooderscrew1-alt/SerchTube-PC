@@ -14,6 +14,8 @@ import {
   hasAgeRestrictionMarkers,
   isYouTubeVideoRestricted,
   isValidSongTitle,
+  sanitizeSongTitleAndArtist,
+  isGenericArtistWord,
   type CatalogTrack
 } from './youtubeEngine.ts';
 import { resolveMusicalContext } from './musicContextEngine.ts';
@@ -690,34 +692,22 @@ export async function scrapeGoogleVideosSection(
 
       const entry = videoMap.get(videoId)!;
 
+      // Si es un enlace de timestamp/duración
       if (isTimestamp) {
         entry.duration = rawText;
         continue;
       }
 
-      // Si es un título válido (no duración, no URL, no comodín genérico)
-      if (isValidSongTitle(rawText)) {
-        const cleanTitle = rawText
-          .replace(/\s*-\s*YouTube.*$/i, '')
-          .replace(/www\.youtube\.com.*$/i, '')
-          .replace(/^[0-9]+:\s*/, '')
-          .trim();
+      // Sanitizar título y artista extraídos del fragmento de Google
+      const sanitized = sanitizeSongTitleAndArtist(rawText, entry.artist);
 
-        if (cleanTitle.length >= 2 && !isNonMusicVideo(cleanTitle)) {
-          // Si aún no tenemos título o este nuevo título es más largo/descriptivo
-          if (!entry.title || cleanTitle.length > entry.title.length) {
-            let title = cleanTitle;
-            let artist = '';
-            if (cleanTitle.includes(' - ')) {
-              const parts = cleanTitle.split(/\s*-\s*/);
-              if (parts.length >= 2 && parts[0].trim().length >= 2) {
-                artist = parts[0].trim();
-                title = parts.slice(1).join(' - ').trim();
-              }
-            }
-            entry.title = title || cleanTitle;
-            if (artist) entry.artist = artist;
-            else if (!entry.artist) entry.artist = query;
+      if (sanitized.isValid) {
+        if (!entry.title || sanitized.title.length > entry.title.length) {
+          entry.title = sanitized.title;
+          if (sanitized.artist && !isGenericArtistWord(sanitized.artist)) {
+            entry.artist = sanitized.artist;
+          } else if (!entry.artist || isGenericArtistWord(entry.artist)) {
+            entry.artist = query;
           }
         }
       }
@@ -725,19 +715,19 @@ export async function scrapeGoogleVideosSection(
 
     const items: CatalogTrack[] = [];
     for (const v of videoMap.values()) {
-      // 🛡️ REGLA ESTRICTA: Descartar si el título quedó vacío o no es un título válido de canción
-      if (!v.title || !isValidSongTitle(v.title)) continue;
-      if (isNonMusicVideo(v.title)) continue;
-      if (/\b(?:240p|360p|144p|low\s*quality|low\s*res|baja\s*calidad)\b/i.test(v.title)) continue;
+      const sanitized = sanitizeSongTitleAndArtist(v.title, v.artist);
+      if (!sanitized.isValid) continue;
+      if (isNonMusicVideo(sanitized.title)) continue;
+      if (/\b(?:240p|360p|144p|low\s*quality|low\s*res|baja\s*calidad)\b/i.test(sanitized.title)) continue;
 
-      let artist = v.artist.trim();
-      if (!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') {
+      let artist = sanitized.artist || v.artist.trim();
+      if (!artist || isGenericArtistWord(artist)) {
         artist = query;
       }
 
       items.push({
         id: v.id,
-        title: v.title,
+        title: sanitized.title,
         artist,
         thumbnail: v.thumbnail,
         duration: v.duration || '3:45'

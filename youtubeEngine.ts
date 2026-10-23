@@ -117,31 +117,125 @@ export function isValidSongTitle(title: string | undefined | null): boolean {
   let t = title.trim();
   if (t.length < 2) return false;
 
-  // Eliminar prefijos de número de pista al inicio para validar
+  // 1. Limpiar timestamp inicial si va seguido de texto real (ej: "4:04 Dr. Dre - Still D.R.E." -> "Dr. Dre - Still D.R.E.")
+  t = t.replace(/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+)\s*[\s\-·|:]*\s*/i, "").trim();
+
+  // 2. Eliminar prefijos de número de pista al inicio para validar
   t = t.replace(/^(?:#?\d+[\s.-]*)+/, "").trim();
   if (t.length < 2) return false;
 
-  // 1. Rechazar timestamps, duraciones o códigos de tiempo puros: "3:18", "03:18", "1:05:15", "0:45", etc.
+  // 3. Rechazar si lo que queda es un timestamp, duración o código de tiempo puro: "3:18", "03:18", "1:05:15", "0:45", etc.
   if (/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+|\d+\s*:\s*\d+)\s*(?:\/\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+))?\s*$/i.test(t)) return false;
 
-  // 2. Rechazar duraciones con sufijos: "3:18 min", "4 mins", "120 seg", "5m 15s"
+  // 4. Rechazar duraciones con sufijos: "3:18 min", "4 mins", "120 seg", "5m 15s"
   if (/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+)\s*(?:min|mins|seg|segundos|seconds|sec|s|m)\b/i.test(t)) return false;
 
-  // 3. Rechazar cadenas que sean solo números
+  // 5. Rechazar cadenas que sean solo números
   if (/^\d+$/.test(t)) return false;
 
-  // 4. Rechazar URLs o enlaces web
+  // 6. Rechazar URLs o enlaces web
   if (/^https?:\/\/|^www\./i.test(t) || t.includes('youtube.com') || t.includes('youtu.be')) return false;
 
-  // 5. Rechazar palabras genéricas y marcadores de posición
-  const lower = t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  // 7. Rechazar palabras genéricas y marcadores de posición
+  const lower = t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
   const genericPlaceholders = new Set([
     'cancion', 'video', 'audio', 'youtube', 'artista', 'artist',
-    'musica', 'desconocido', 'unknown', 'null', 'undefined', 'reproducir', 'reproduce', 'play', 'track'
+    'musica', 'desconocido', 'unknown', 'null', 'undefined', 'reproducir', 'reproduce', 'play', 'track',
+    'en vivo', 'live'
   ]);
   if (genericPlaceholders.has(lower)) return false;
 
+  // 8. Rechazar combinaciones de números/timestamps + palabras genéricas ("4:04 artista", "04 artista", "3:18 video", "video 4:04")
+  if (/^(?:\d+[\s:]*)*(?:artista|artist|video|audio|youtube|musica|cancion)$/i.test(lower)) return false;
+  if (/^(?:artista|artist|video|audio|youtube|musica|cancion)[\s:]*(?:\d+[\s:]*)*$/i.test(lower)) return false;
+
   return true;
+}
+
+export function isGenericArtistWord(word: string): boolean {
+  if (!word) return true;
+  const lower = word.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  const genericPlaceholders = new Set([
+    'cancion', 'video', 'audio', 'youtube', 'artista', 'artist',
+    'musica', 'desconocido', 'unknown', 'null', 'undefined', 'reproducir', 'reproduce', 'play', 'track',
+    'en vivo', 'live'
+  ]);
+  if (genericPlaceholders.has(lower)) return true;
+  if (/^\d+$/.test(lower)) return true;
+  if (/^(?:\d{1,2}:)?\d{1,2}:\d{2}$/.test(lower)) return true;
+  if (/^(?:\d+[\s:]*)*(?:artista|artist|video|audio|youtube|musica|cancion)$/i.test(lower)) return true;
+  return false;
+}
+
+/**
+ * Sanitiza y separa de forma limpia el título y el artista de una pista,
+ * eliminando timestamps sobrantes, marcas de agua o textos de relleno ("4:04 artista" -> "Artista", "4:04 Dr. Dre" -> "Dr. Dre").
+ */
+export function sanitizeSongTitleAndArtist(
+  rawTitle: string | undefined | null,
+  rawArtist?: string
+): { title: string; artist: string; isValid: boolean } {
+  if (!rawTitle || typeof rawTitle !== 'string') {
+    return { title: '', artist: '', isValid: false };
+  }
+
+  let title = rawTitle.trim();
+
+  // 1. Eliminar cualquier timestamp inicial: "4:04", "03:18", "1:02:40", "4:04 -"
+  title = title.replace(/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+)\s*[\s\-·|:]*\s*/i, '').trim();
+
+  // 2. Eliminar prefijos de pista o números al inicio: "#1 -", "02.", "1."
+  title = title.replace(/^(?:#?\d+[\s.-]+)+/, '').trim();
+
+  // 3. Eliminar sufijos de canal o marcas de YouTube al final: "- YouTube", "| YouTube", "www.youtube.com"
+  title = title
+    .replace(/\s*[\-·|:]\s*YouTube.*$/i, '')
+    .replace(/\s+YouTube$/i, '')
+    .replace(/www\.youtube\.com.*$/i, '')
+    .trim();
+
+  let artist = (rawArtist || '').trim();
+
+  // Limpiar sufijos típicos del artista
+  artist = artist
+    .replace(/\s*-\s*topic$/i, '')
+    .replace(/\s*vevo$/i, '')
+    .replace(/\s*official(\s*channel)?$/i, '')
+    .trim();
+
+  // 4. Separar "Artista - Canción" si el título contiene guión
+  if (title.includes(' - ')) {
+    const parts = title.split(/\s*-\s*/);
+    if (parts.length >= 2 && parts[0].trim().length >= 2) {
+      const possibleArtist = parts[0].trim();
+      const possibleTitle = parts.slice(1).join(' - ').trim();
+
+      if (!artist || isGenericArtistWord(artist)) {
+        artist = possibleArtist;
+        title = possibleTitle;
+      } else if (
+        possibleArtist.toLowerCase() === artist.toLowerCase() ||
+        artist.toLowerCase().includes(possibleArtist.toLowerCase())
+      ) {
+        title = possibleTitle;
+      }
+    }
+  }
+
+  // Volver a eliminar cualquier timestamp remanente
+  title = title.replace(/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+)\s*/i, '').trim();
+
+  const valid = isValidSongTitle(title);
+
+  if (!artist || isGenericArtistWord(artist)) {
+    artist = '';
+  }
+
+  return {
+    title: valid ? title : '',
+    artist,
+    isValid: valid
+  };
 }
 
 /**
@@ -1050,18 +1144,19 @@ export async function buildArtistAndMixPlaylist(
     for (const item of candidatePool) {
       if (!item || !item.id || seenIds.has(item.id)) continue;
       // 🛡️ REGLA DE ORO ANTI-DURACIONES Y NOMBRES RAROS:
-      // Jamás admitir duraciones / timestamps ("3:18", "5:15") ni títulos genéricos
-      if (!isValidSongTitle(item.title)) continue;
-      if (isNonMusicVideo(item.title, item.duration)) continue;
-      if (isLowQualityVideo(item.title, item.artist)) continue;
-      if (isCompilationOrMix(item.title)) continue;
+      // Jamás admitir duraciones / timestamps ("3:18", "5:15", "4:04 artista") ni títulos genéricos
+      const sanitized = sanitizeSongTitleAndArtist(item.title, item.artist);
+      if (!sanitized.isValid) continue;
+      if (isNonMusicVideo(sanitized.title, item.duration)) continue;
+      if (isLowQualityVideo(sanitized.title, item.artist)) continue;
+      if (isCompilationOrMix(sanitized.title)) continue;
 
       // 🛡️ REGLA DE ORO ANTI-REPETICIÓN:
       // Jamás añadir la MISMA canción que la pista #1 bajo otro título o canal
-      if (areSameSong(item.title, cleanTopTrack.title, query)) continue;
+      if (areSameSong(sanitized.title, cleanTopTrack.title, query)) continue;
 
       // Comparación estricta de parte de canción
-      const itemSongKey = cleanSongPart(item.title);
+      const itemSongKey = cleanSongPart(sanitized.title);
       if (topSongKey && itemSongKey && (topSongKey === itemSongKey || itemSongKey.includes(topSongKey) || topSongKey.includes(itemSongKey))) {
         continue;
       }
@@ -1069,7 +1164,7 @@ export async function buildArtistAndMixPlaylist(
       // Evitar canciones duplicadas entre sí en la cola
       let isRepeatInQueue = false;
       for (const existing of fullPlaylist) {
-        if (areSameSong(item.title, existing.title)) {
+        if (areSameSong(sanitized.title, existing.title)) {
           isRepeatInQueue = true;
           break;
         }
@@ -1083,23 +1178,14 @@ export async function buildArtistAndMixPlaylist(
 
       seenIds.add(item.id);
 
-      // Normalizar artista y título: si el título viene como "Artista - Canción", separar limpiamente
-      let itemTitle = item.title.trim();
-      let itemArtist = (item.artist || '').trim();
-      if ((!itemArtist || itemArtist.toLowerCase() === 'artista' || itemArtist.toLowerCase() === 'youtube') && itemTitle.includes(' - ')) {
-        const parts = itemTitle.split(/\s*-\s*/);
-        if (parts.length >= 2 && parts[0].trim().length >= 2) {
-          itemArtist = parts[0].trim();
-          itemTitle = parts.slice(1).join(' - ').trim();
-        }
-      }
-      if (!itemArtist || itemArtist.toLowerCase() === 'artista' || itemArtist.toLowerCase() === 'youtube') {
+      let itemArtist = sanitized.artist;
+      if (!itemArtist || isGenericArtistWord(itemArtist)) {
         itemArtist = candidateArtist || cleanTopTrack.artist || 'Música';
       }
 
       fullPlaylist.push({
         ...item,
-        title: itemTitle || item.title,
+        title: sanitized.title,
         artist: itemArtist,
         thumbnail: item.thumbnail && !item.thumbnail.includes('unsplash')
           ? item.thumbnail
