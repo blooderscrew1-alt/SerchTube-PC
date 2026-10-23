@@ -34,7 +34,7 @@ import { KeyboardInputOverlay } from './components/KeyboardInputOverlay';
 import { GoogleHomeModal } from './components/GoogleHomeModal';
 import { AnimatedQrCountdownModal } from './components/AnimatedQrCountdownModal';
 import { googleHomeService } from './services/googleHomeService';
-import { isPureResumePhrase, extractYouTubeId, isValidYouTubeId } from './utils/youtube';
+import { isPureResumePhrase, extractYouTubeId, isValidYouTubeId, isValidTrackTitleClient, sanitizeTrackClient } from './utils/youtube';
 import { getEnthusiasticFeedback } from './utils/speechPhrases';
 
 interface GamepadControlsProps {
@@ -301,8 +301,10 @@ export default function App() {
     const list: Track[] = [];
     const seen = new Set<string>();
     const seenKeys = new Set<string>();
-    const current = playerStateRef.current.currentTrack || playlistQueueRef.current[playlistIndexRef.current];
-    if (current && current.id) {
+    const rawCurrent = playerStateRef.current.currentTrack || playlistQueueRef.current[playlistIndexRef.current];
+    const current = rawCurrent ? sanitizeTrackClient(rawCurrent) : null;
+
+    if (current && current.id && isValidTrackTitleClient(current.title)) {
       seen.add(current.id);
       const key = normalizeSongKeyForDedup(current.title);
       const partKey = extractSongPartForDedup(current.title);
@@ -322,8 +324,11 @@ export default function App() {
       const start = pIdx >= 0 ? pIdx + 1 : 1;
       for (let i = start; i < q.length; i++) {
         if (list.length >= 20) break;
-        const t = q[i];
-        if (!t || !t.id || seen.has(t.id)) continue;
+        const rawT = q[i];
+        if (!rawT || !rawT.id || !isValidTrackTitleClient(rawT.title)) continue;
+        const t = sanitizeTrackClient(rawT);
+        if (!isValidTrackTitleClient(t.title)) continue;
+        if (seen.has(t.id)) continue;
         if (current && areSameSongClient(t.title, current.title)) continue;
         const key = normalizeSongKeyForDedup(t.title);
         const partKey = extractSongPartForDedup(t.title);
@@ -344,8 +349,11 @@ export default function App() {
       if (list.length < 20) {
         for (let i = 0; i < Math.min(start - 1, q.length); i++) {
           if (list.length >= 20) break;
-          const t = q[i];
-          if (!t || !t.id || seen.has(t.id)) continue;
+          const rawT = q[i];
+          if (!rawT || !rawT.id || !isValidTrackTitleClient(rawT.title)) continue;
+          const t = sanitizeTrackClient(rawT);
+          if (!isValidTrackTitleClient(t.title)) continue;
+          if (seen.has(t.id)) continue;
           if (current && areSameSongClient(t.title, current.title)) continue;
           const key = normalizeSongKeyForDedup(t.title);
           const partKey = extractSongPartForDedup(t.title);
@@ -2176,8 +2184,11 @@ export default function App() {
         const seenKeys = new Set<string>();
         const normalizedQueue: Track[] = [];
 
-        for (const item of rawItems) {
-          if (!item || !item.id || seenIds.has(item.id)) continue;
+        for (const rawItem of rawItems) {
+          if (!rawItem || !rawItem.id || !isValidTrackTitleClient(rawItem.title)) continue;
+          const item = sanitizeTrackClient(rawItem);
+          if (!isValidTrackTitleClient(item.title)) continue;
+          if (seenIds.has(item.id)) continue;
           if (/\b(?:240p|360p|144p|low\s*quality|low\s*res|baja\s*calidad)\b/i.test(item.title)) continue;
           const fullKey = normalizeSongKeyForDedup(item.title);
           const partKey = extractSongPartForDedup(item.title);
@@ -2221,8 +2232,11 @@ export default function App() {
                 const freshTracks: Track[] = [];
                 const currentIds = new Set([selected.id]);
                 const currentKeys = new Set([normalizeSongKeyForDedup(selected.title)].filter(Boolean));
-                for (const it of relData.items) {
-                  if (!it || !it.id || currentIds.has(it.id)) continue;
+                for (const rawIt of relData.items) {
+                  if (!rawIt || !rawIt.id || !isValidTrackTitleClient(rawIt.title)) continue;
+                  const it = sanitizeTrackClient(rawIt);
+                  if (!isValidTrackTitleClient(it.title)) continue;
+                  if (currentIds.has(it.id)) continue;
                   if (areSameSongClient(it.title, selected.title)) continue;
                   const k = normalizeSongKeyForDedup(it.title);
                   const pk = extractSongPartForDedup(it.title);

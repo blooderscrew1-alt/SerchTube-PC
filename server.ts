@@ -24,6 +24,8 @@ import {
   isLowQualityVideo,
   findCompatibleAlternative,
   isValidSongTitle,
+  sanitizeSongTitleAndArtist,
+  isGenericArtistWord,
   type CatalogTrack
 } from "./youtubeEngine.ts";
 import { resolveMusicalContext, isTrackGenreCoherent } from "./musicContextEngine.ts";
@@ -1983,7 +1985,7 @@ app.get("/api/google-search", async (req, res) => {
 const cacheBusquedasVoz = new Map<string, { at: number; payload: any }>();
 const TTL_BUSQUEDA_VOZ_MS = 2500;
 
-// Función para garantizar que ninguna pista con timestamp ("3:18", "5:15") o artista genérico llegue a la cola
+// Función para garantizar que ninguna pista con timestamp ("3:18", "5:15", "4:04") o artista genérico llegue a la cola
 function sanitizeTrackList(items: CatalogTrack[], defaultArtist: string = 'Música'): CatalogTrack[] {
   if (!Array.isArray(items)) return [];
   const clean: CatalogTrack[] = [];
@@ -1991,25 +1993,21 @@ function sanitizeTrackList(items: CatalogTrack[], defaultArtist: string = 'Músi
 
   for (const t of items) {
     if (!t || !t.id || seenIds.has(t.id)) continue;
-    if (!isValidSongTitle(t.title)) continue;
+    
+    // 🛡️ SANITIZACIÓN Y VALIDACIÓN RIGUROSA ANTI-TIMESTAMPS ("4:04", "05:15", "4:04 artista")
+    const sanitized = sanitizeSongTitleAndArtist(t.title, t.artist);
+    if (!sanitized.isValid) continue;
+
     seenIds.add(t.id);
 
-    let title = t.title.trim();
-    let artist = (t.artist || '').trim();
-    if ((!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') && title.includes(' - ')) {
-      const parts = title.split(/\s*-\s*/);
-      if (parts.length >= 2 && parts[0].trim().length >= 2) {
-        artist = parts[0].trim();
-        title = parts.slice(1).join(' - ').trim();
-      }
-    }
-    if (!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') {
-      artist = defaultArtist;
+    let artist = sanitized.artist;
+    if (!artist || isGenericArtistWord(artist)) {
+      artist = defaultArtist || 'Música';
     }
 
     clean.push({
       ...t,
-      title: title || t.title,
+      title: sanitized.title,
       artist,
       thumbnail: t.thumbnail && !t.thumbnail.includes('unsplash')
         ? t.thumbnail

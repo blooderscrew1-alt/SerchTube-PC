@@ -110,3 +110,68 @@ export function isPureResumePhrase(cleanText?: string): boolean {
 
   return false;
 }
+
+export function isValidTrackTitleClient(title: string | undefined | null): boolean {
+  if (!title || typeof title !== 'string') return false;
+  let t = title.trim();
+  if (t.length < 2) return false;
+
+  // Stripping leading timestamps
+  t = t.replace(/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+)\s*[\s\-·|:]*\s*/i, "").trim();
+  t = t.replace(/^(?:#?\d+[\s.-]*)+/, "").trim();
+  if (t.length < 2) return false;
+
+  // Pure timestamps/durations
+  if (/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+|\d+\s*:\s*\d+)\s*(?:\/\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+))?\s*$/i.test(t)) return false;
+  if (/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+)\s*(?:min|mins|seg|s|m)\b/i.test(t)) return false;
+  if (/^\d+$/.test(t)) return false;
+
+  const lower = t.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  const genericPlaceholders = new Set([
+    'cancion', 'video', 'audio', 'youtube', 'artista', 'artist',
+    'musica', 'desconocido', 'unknown', 'null', 'undefined', 'reproducir', 'reproduce', 'play', 'track',
+    'en vivo', 'live'
+  ]);
+  if (genericPlaceholders.has(lower)) return false;
+  if (/^(?:\d+[\s:]*)*(?:artista|artist|video|audio|youtube|musica|cancion)$/i.test(lower)) return false;
+  if (/^(?:artista|artist|video|audio|youtube|musica|cancion)[\s:]*(?:\d+[\s:]*)*$/i.test(lower)) return false;
+
+  return true;
+}
+
+export function sanitizeTrackClient<T extends { title?: string; artist?: string }>(track: T, defaultArtist: string = 'Música'): T {
+  if (!track || !track.title) return track;
+
+  let title = track.title.trim();
+  title = title.replace(/^\s*(?:(?:\d{1,2}:)?\d{1,2}:\d{2}|\d+:\d+)\s*[\s\-·|:]*\s*/i, "").trim();
+  title = title.replace(/^(?:#?\d+[\s.-]*)+/, "").trim();
+
+  let artist = (track.artist || '').trim();
+  if (title.includes(' - ')) {
+    const parts = title.split(/\s*-\s*/);
+    if (parts.length >= 2 && parts[0].trim().length >= 2) {
+      const possibleArtist = parts[0].trim();
+      const possibleTitle = parts.slice(1).join(' - ').trim();
+
+      if (!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') {
+        artist = possibleArtist;
+        title = possibleTitle;
+      } else if (
+        possibleArtist.toLowerCase() === artist.toLowerCase() ||
+        artist.toLowerCase().includes(possibleArtist.toLowerCase())
+      ) {
+        title = possibleTitle;
+      }
+    }
+  }
+
+  if (!artist || artist.toLowerCase() === 'artista' || artist.toLowerCase() === 'youtube') {
+    artist = defaultArtist;
+  }
+
+  return {
+    ...track,
+    title: title || track.title,
+    artist
+  };
+}
