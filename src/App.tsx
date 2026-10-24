@@ -35,7 +35,7 @@ import { GoogleHomeModal } from './components/GoogleHomeModal';
 import { AnimatedQrCountdownModal } from './components/AnimatedQrCountdownModal';
 import { googleHomeService } from './services/googleHomeService';
 import { isPureResumePhrase, extractYouTubeId, isValidYouTubeId, isValidTrackTitleClient, sanitizeTrackClient } from './utils/youtube';
-import { applyTrackMetadata, cleanQueueTrack, needsTitleRepair } from './utils/queueTracks';
+import { applyTrackMetadata, cleanQueueTrack, needsTitleRepair, getTrackDisplayTitle, getTrackDisplayArtist } from './utils/queueTracks';
 import { getEnthusiasticFeedback } from './utils/speechPhrases';
 
 interface GamepadControlsProps {
@@ -383,6 +383,8 @@ export default function App() {
   // Keep track of last known track and exact playback second for resume
   const lastKnownTrackRef = useRef<Track | null>(playerState.currentTrack);
   const lastKnownTimeRef = useRef<number>(0);
+  const handleEnqueueTracksRef = useRef<(tracks: Track | Track[], positionMode?: 'next' | 'end') => void>(() => {});
+  const handleEnqueueQueryRef = useRef<(query: string, positionMode?: 'next' | 'end') => void>(async () => {});
 
   // 🛠️ Reparación de títulos de la cola:
   // Si una pista llega con la duración como nombre ("4:04") o con un marcador de
@@ -2941,6 +2943,29 @@ export default function App() {
         }
         break;
 
+      case 'enqueue':
+      case 'add_to_queue':
+      case 'queue_add': {
+        const positionMode = (command as any).positionMode || 'end';
+        if (Array.isArray((command as any).tracks) && (command as any).tracks.length > 0) {
+          handleEnqueueTracksRef.current((command as any).tracks, positionMode);
+        } else if ((command as any).track) {
+          handleEnqueueTracksRef.current((command as any).track, positionMode);
+        } else if ((command as any).videoId) {
+          const singleTrack: Track = cleanQueueTrack({
+            id: (command as any).videoId,
+            title: (command as any).title || '',
+            artist: (command as any).artist || '',
+            thumbnail: (command as any).thumbnail || `https://i.ytimg.com/vi/${(command as any).videoId}/hqdefault.jpg`,
+            duration: (command as any).duration || ''
+          });
+          handleEnqueueTracksRef.current(singleTrack, positionMode);
+        } else if ((command as any).query || query) {
+          handleEnqueueQueryRef.current((command as any).query || query, positionMode);
+        }
+        break;
+      }
+
       case 'pause':
       case 'stop':
         setPlayerState(prev => ({ ...prev, isPlaying: false }));
@@ -3596,6 +3621,136 @@ export default function App() {
     }
   };
 
+  // Añadir una o varias canciones a la cola sin interrumpir la pista actual
+  const handleEnqueueTracks = useCallback((incomingTracks: Track | Track[], positionMode: 'next' | 'end' = 'end') => {
+    const rawList = Array.isArray(incomingTracks) ? incomingTracks : [incomingTracks];
+    const validTracks = rawList
+      .map(t => cleanQueueTrack(t))
+      .filter(t => t && t.id);
+
+    if (validTracks.length === 0) return;
+
+    if (nodeRoleRef.current === 'satellite') {
+      NodeSyncService.getInstance().sendCommandToMaster({
+        action: 'enqueue',
+        tracks: validTracks,
+        positionMode
+      });
+      AudioEngine.getInstance().playBeep('up');
+      const count = validTracks.length;
+      const label = count === 1
+        ? `Formando a la cola: "${getTrackDisplayTitle(validTracks[0])}"`
+        : `Formando ${count} canciones a la cola`;
+      setAssistantResponse(label);
+      return;
+    }
+
+    // En el Master (Host / Coche):
+    // Si no hay música sonando y la cola está vacía, reproducir la primera de inmediato
+    const isPlaying = playerStateRef.current.isPlaying;
+    const hasTrack = !!playerStateRef.current.currentTrack;
+    if (!isPlaying && !hasTrack && playlistQueueRef.current.length === 0) {
+      const first = validTracks[0];
+      setPlaylistQueue(validTracks);
+      setPlaylistIndex(0);
+      setPlayerState(prev => ({
+        ...prev,
+        currentTrack: first,
+        isPlaying: true,
+        currentTime: 0
+      }));
+      enforcePostPlaybackMicSafety();
+      AudioEngine.getInstance().playBeep('up');
+      setTimeout(() => {
+        NodeSyncService.getInstance().broadcastMasterState(
+          { ...playerStateRef.current, currentTrack: first, isPlaying: true, currentTime: 0 },
+          getUpcomingQueueRef.current()
+        );
+      }, 50);
+      return;
+    }
+
+    setPlaylistQueue(prevQueue => {
+      let updatedQueue: Track[];
+      if (positionMode === 'next') {
+        const insertIdx = Math.min(prevQueue.length, playlistIndexRef.current + 1);
+        updatedQueue = [
+          ...prevQueue.slice(0, insertIdx),
+          ...validTracks,
+          ...prevQueue.slice(insertIdx)
+        ];
+      } else {
+        updatedQueue = [...prevQueue, ...validTracks];
+      }
+
+      try {
+        localStorage.setItem('serchtube_playlist_queue', JSON.stringify(updatedQueue));
+      } catch (_) {}
+
+      return updatedQueue;
+    });
+
+    AudioEngine.getInstance().playBeep('up');
+    const count = validTracks.length;
+    const label = count === 1
+      ? `➕ Formada a la cola: "${getTrackDisplayTitle(validTracks[0])}"`
+      : `➕ ${count} canciones formadas a la cola`;
+    setAssistantResponse(label);
+
+    setTimeout(() => {
+      NodeSyncService.getInstance().broadcastMasterState(
+        playerStateRef.current,
+        getUpcomingQueueRef.current()
+      );
+    }, 60);
+  }, []);
+
+  // Formar a la cola a partir de búsqueda por texto / enlace
+  const handleEnqueueQuery = useCallback(async (query: string, positionMode: 'next' | 'end' = 'end') => {
+    if (nodeRoleRef.current === 'satellite') {
+      NodeSyncService.getInstance().sendCommandToMaster({
+        action: 'enqueue',
+        query,
+        rawQuery: query,
+        positionMode
+      });
+      AudioEngine.getInstance().playBeep('up');
+      setAssistantResponse(`➕ Formando a la cola: "${query}"`);
+      return;
+    }
+
+    try {
+      const cleaned = query.trim();
+      const directId = extractYouTubeId(cleaned);
+      if (isValidYouTubeId(directId)) {
+        const directTrack: Track = {
+          id: directId,
+          title: 'Vídeo de YouTube',
+          artist: 'YouTube',
+          thumbnail: `https://i.ytimg.com/vi/${directId}/hqdefault.jpg`,
+          duration: 'Directo'
+        };
+        handleEnqueueTracks(directTrack, positionMode);
+        return;
+      }
+      const resp = await fetch(`/api/youtube/search?q=${encodeURIComponent(cleaned)}&isArtist=false`);
+      const data = await resp.json();
+      const rawItems: Track[] = (data.items && Array.isArray(data.items) && data.items.length > 0)
+        ? data.items
+        : (data.firstTrack ? [data.firstTrack] : []);
+      if (rawItems.length > 0) {
+        handleEnqueueTracks(sanitizeTrackClient(rawItems[0]), positionMode);
+      } else {
+        setAssistantResponse(`🔍 No se encontró para formar a la cola: "${cleaned}"`);
+      }
+    } catch (e) {
+      console.warn('[SerchTube Master] Error encolando consulta:', e);
+    }
+  }, [handleEnqueueTracks]);
+
+  handleEnqueueTracksRef.current = handleEnqueueTracks;
+  handleEnqueueQueryRef.current = handleEnqueueQuery;
+
   // Direct Player Event Dispatcher from Satellite / Command Dispatcher
   const handleDirectPlayerEvent = (evt: any) => {
     if (!evt || !evt.event) return;
@@ -3603,7 +3758,7 @@ export default function App() {
     const evtType = String(evt.event).toUpperCase();
 
     // 🛡️ Ventana de 3 Segundos / Arbitraje Global: Solo aceptar la primera solicitud musical/transporte que llegue en menos de 3s.
-    // Los controles de volumen y silencio NUNCA deben bloquearse.
+    // Los controles de volumen, silencio y encolar NUNCA deben bloquearse.
     const isVolumeEvt =
       evtType === 'SET_VOLUME' ||
       evtType === 'VOLUME_UP' ||
@@ -3611,7 +3766,15 @@ export default function App() {
       evtType === 'MUTE' ||
       evtType === 'UNMUTE';
 
-    if (!isVolumeEvt && evtType !== 'SCREENSAVER_START' && evtType !== 'SCREENSAVER_STOP' && evtType !== 'ACTIVATE_MIC') {
+    const isNonBlockingEvt =
+      isVolumeEvt ||
+      evtType === 'SCREENSAVER_START' ||
+      evtType === 'SCREENSAVER_STOP' ||
+      evtType === 'ACTIVATE_MIC' ||
+      evtType === 'ENQUEUE' ||
+      evtType === 'ADD_TO_QUEUE';
+
+    if (!isNonBlockingEvt) {
       if (!tryAcquireTurn(`nodo_direct_${fromNode}`, evt.title || evt.videoId || evtType)) {
         console.log(`[SerchTube Master] 🛡️ Ventana de 3s: Evento ${evtType} descartado de "${fromNode}". Ya se aceptó una solicitud previa.`);
         return;
@@ -3619,6 +3782,27 @@ export default function App() {
     }
 
     switch (evt.event) {
+      case 'ENQUEUE':
+      case 'ADD_TO_QUEUE': {
+        const positionMode = evt.positionMode || 'end';
+        if (Array.isArray(evt.tracks) && evt.tracks.length > 0) {
+          handleEnqueueTracks(evt.tracks, positionMode);
+        } else if (evt.track) {
+          handleEnqueueTracks(evt.track, positionMode);
+        } else if (evt.videoId) {
+          const singleTrack: Track = cleanQueueTrack({
+            id: evt.videoId,
+            title: evt.title || '',
+            artist: evt.artist || '',
+            thumbnail: evt.thumbnail || `https://i.ytimg.com/vi/${evt.videoId}/hqdefault.jpg`,
+            duration: evt.duration || ''
+          });
+          handleEnqueueTracks(singleTrack, positionMode);
+        } else if (evt.query) {
+          handleEnqueueQuery(evt.query, positionMode);
+        }
+        break;
+      }
       case 'ACTIVATE_MIC': {
         // 🎙️ Un nodo satélite o móvil QR envió la orden de abrir el micrófono del host:
         // openMicrophoneInstantly maneja la deduplicación concurrente y abre el micro en milisegundos.
@@ -4523,6 +4707,8 @@ export default function App() {
         playlistQueue={playlistQueue}
         playlistIndex={playlistIndex}
         onSelectTrackFromQueue={handleSelectTrackFromQueue}
+        onEnqueueTracks={handleEnqueueTracks}
+        onEnqueueQuery={handleEnqueueQuery}
         onClearPlaylistQueue={handleClearPlaylistQueue}
         onQueueReferenceUpdated={handleQueueReferenceUpdated}
         onTrackSelectedByPlayer={handleTrackSelectedByPlayer}

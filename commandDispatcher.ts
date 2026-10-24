@@ -48,6 +48,7 @@ export type IntentType =
   | 'RELOAD_PLAYER'
   | 'FULLSCREEN_TOGGLE'
   | 'SHOW_QR'
+  | 'ENQUEUE'
   | 'SCREENSAVER_START'
   | 'SCREENSAVER_STOP'
   | 'UNKNOWN';
@@ -421,6 +422,27 @@ export function resolveIntent(payload: IncomingSatellitePayload): ResolvedIntent
 
   const lowerText = rawText.toLowerCase();
   const lowerAction = originalAction.toLowerCase();
+
+  // 0. ENQUEUE / AGREGAR O FORMAR A LA COLA
+  if (
+    lowerAction === 'enqueue' ||
+    lowerAction === 'add_to_queue' ||
+    lowerAction === 'queue_add' ||
+    lowerAction === 'formar_cola' ||
+    /(?:^|\b)(?:formar\s+a\s+la\s+cola|agregar\s+a\s+la\s+cola|a[ñn]adir\s+a\s+la\s+cola|poner\s+en\s+la\s+cola|encolar|a\s+la\s+cola|ponla\s+en\s+la\s+cola)(?:\b|$)/i.test(lowerText)
+  ) {
+    const cleanQ = cleanQueryEngine(rawText)
+      .replace(/^(formar|agregar|añadir|anadir|poner|encolar)\s+(a\s+la\s+cola|en\s+la\s+cola|a\s+cola)?/i, '')
+      .replace(/\s+(a\s+la\s+cola|en\s+la\s+cola)$/i, '')
+      .trim();
+    return {
+      intent: 'ENQUEUE',
+      query: extracted.title || cleanQ || rawText || extracted.videoId,
+      cleanQuery: extracted.title || cleanQ || rawText || extracted.videoId,
+      originalAction: originalAction || 'enqueue',
+      rawText
+    };
+  }
 
   // 1. Reproducción directa por videoId
   if (extracted.videoId) {
@@ -1372,6 +1394,104 @@ export class CommandDispatcher {
             nodeId,
             room
           });
+        }
+        break;
+      }
+
+      case 'ENQUEUE': {
+        const payloadAny = payload as any;
+        const tracks = payloadAny.tracks;
+        const directVideoId = payloadAny.videoId || payloadAny.command?.videoId || payloadAny.data?.videoId;
+        const positionMode = payloadAny.positionMode || 'end';
+
+        if (Array.isArray(tracks) && tracks.length > 0) {
+          const browserPayload: PlayerBrowserEvent = {
+            event: 'ENQUEUE',
+            tracks,
+            positionMode,
+            nodeId,
+            fromNode: nodeName,
+            timestamp: Date.now()
+          };
+          this.dispatchToBrowserPlayer(room, browserPayload, clientsMap, broadcastToRoom);
+          this.sendAck(senderWs, {
+            type: 'command_ack',
+            success: true,
+            message: `${tracks.length} canciones formadas a la cola`,
+            nodeId,
+            room
+          });
+          break;
+        }
+
+        if (directVideoId) {
+          const video = {
+            videoId: directVideoId,
+            title: payloadAny.title || payloadAny.command?.title || 'Canción',
+            artist: payloadAny.artist || payloadAny.command?.artist || '',
+            thumbnail: payloadAny.thumbnail || payloadAny.command?.thumbnail || `https://i.ytimg.com/vi/${directVideoId}/hqdefault.jpg`,
+            duration: payloadAny.duration || '3:45'
+          };
+          const browserPayload: PlayerBrowserEvent = {
+            event: 'ENQUEUE',
+            videoId: video.videoId,
+            title: video.title,
+            artist: video.artist,
+            thumbnail: video.thumbnail,
+            duration: video.duration,
+            positionMode,
+            nodeId,
+            fromNode: nodeName,
+            timestamp: Date.now()
+          };
+          this.dispatchToBrowserPlayer(room, browserPayload, clientsMap, broadcastToRoom);
+          this.sendAck(senderWs, {
+            type: 'command_ack',
+            success: true,
+            message: `Formada a la cola: ${video.title}`,
+            nodeId,
+            room
+          });
+          break;
+        }
+
+        const queryToSearch = resolved.cleanQuery || resolved.query || '';
+        if (queryToSearch) {
+          try {
+            const video = await searchYouTubeVideo(queryToSearch);
+            if (video) {
+              const browserPayload: PlayerBrowserEvent = {
+                event: 'ENQUEUE',
+                videoId: video.videoId,
+                title: video.title,
+                artist: video.artist,
+                thumbnail: video.thumbnail,
+                duration: video.duration,
+                positionMode,
+                nodeId,
+                fromNode: nodeName,
+                timestamp: Date.now()
+              };
+              this.dispatchToBrowserPlayer(room, browserPayload, clientsMap, broadcastToRoom);
+              this.sendAck(senderWs, {
+                type: 'command_ack',
+                success: true,
+                message: `Formada a la cola: ${video.title}`,
+                nodeId,
+                room
+              });
+            } else {
+              this.sendAck(senderWs, {
+                type: 'command_ack',
+                success: false,
+                message: `No se encontró para encolar: "${queryToSearch}"`,
+                nodeId,
+                room
+              });
+            }
+          } catch (e: any) {
+            console.error('[CommandDispatcher] Error encolando:', e);
+          }
         }
         break;
       }

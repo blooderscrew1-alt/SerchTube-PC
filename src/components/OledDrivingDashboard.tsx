@@ -55,7 +55,11 @@ import {
   UserCheck,
   RefreshCw,
   Clipboard,
-  Trash2
+  Trash2,
+  ListPlus,
+  CheckSquare,
+  Square,
+  CornerDownRight
 } from 'lucide-react';
 import { QuickRemoteQrCode } from './QuickRemoteQrCode';
 import { AutoZoomModeButton } from './AutoZoomModeButton';
@@ -118,6 +122,8 @@ interface OledDrivingDashboardProps {
   playlistQueue?: Track[];
   playlistIndex?: number;
   onSelectTrackFromQueue?: (track: Track, index: number) => void;
+  onEnqueueTracks?: (tracks: Track | Track[], positionMode?: 'next' | 'end') => void;
+  onEnqueueQuery?: (query: string, positionMode?: 'next' | 'end') => void;
   onClearPlaylistQueue?: () => void;
   onQueueReferenceUpdated?: (tracks: Track[]) => void;
   onTrackSelectedByPlayer?: (track: Track) => void;
@@ -214,6 +220,8 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
   playlistQueue = [],
   playlistIndex = 0,
   onSelectTrackFromQueue,
+  onEnqueueTracks,
+  onEnqueueQuery,
   onClearPlaylistQueue,
   onQueueReferenceUpdated,
   onTrackSelectedByPlayer
@@ -231,6 +239,39 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
   const [showYouTubeAuthModal, setShowYouTubeAuthModal] = useState<boolean>(false);
   const [isHostScannerOpen, setIsHostScannerOpen] = useState<boolean>(false);
   const [googleProfile, setGoogleProfile] = useState<GoogleAccountProfile>(() => youtubeAuthService.getProfile());
+
+  // Estados para búsqueda de canciones en mando satélite
+  const [searchResults, setSearchResults] = useState<Track[]>([]);
+  const [isSearching, setIsSearching] = useState<boolean>(false);
+  const [showSearchResults, setShowSearchResults] = useState<boolean>(false);
+  const [selectedSearchTrackIds, setSelectedSearchTrackIds] = useState<string[]>([]);
+  const [searchQueryLabel, setSearchQueryLabel] = useState<string>('');
+
+  // Modo selección múltiple en la lista de reproducción (mando satélite)
+  const [isQueueSelectionMode, setIsQueueSelectionMode] = useState<boolean>(false);
+  const [selectedQueueTrackIds, setSelectedQueueTrackIds] = useState<string[]>([]);
+
+  // Modal "¿Reproducir ahora o formar a la cola?"
+  const [queuePromptModal, setQueuePromptModal] = useState<{
+    isOpen: boolean;
+    track?: Track;
+    tracks?: Track[];
+    query?: string;
+    isArtist?: boolean;
+    source: 'search_submit' | 'search_track' | 'search_selection' | 'queue_track' | 'queue_selection';
+  } | null>(null);
+
+  // Toast efímero de confirmación visual para satélite
+  const [satelliteToast, setSatelliteToast] = useState<string | null>(null);
+  const toastTimeoutRef = useRef<any>(null);
+
+  const showToast = (message: string) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setSatelliteToast(message);
+    toastTimeoutRef.current = setTimeout(() => {
+      setSatelliteToast(null);
+    }, 3200);
+  };
 
   const isYouTubeAuthVerified = googleProfile.isLinked && googleProfile.botStatus !== 'detected';
   const hasBotAlert = googleProfile.botStatus === 'detected';
@@ -458,11 +499,139 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
     return () => clearInterval(timer);
   }, []);
 
+  const performSearch = async (term: string) => {
+    const q = term.trim();
+    if (!q) return;
+    setIsSearching(true);
+    setShowSearchResults(true);
+    setSearchQueryLabel(q);
+    setSelectedSearchTrackIds([]);
+    try {
+      const resp = await fetch(`/api/youtube/search?q=${encodeURIComponent(q)}&isArtist=false`);
+      const data = await resp.json();
+      const rawItems: Track[] = (data.items && Array.isArray(data.items) && data.items.length > 0)
+        ? data.items
+        : (data.firstTrack ? [data.firstTrack] : []);
+      const sanitized = rawItems
+        .map(t => cleanQueueTrack(t))
+        .filter(t => t && t.id);
+      setSearchResults(sanitized);
+    } catch (err) {
+      console.warn('Satellite search error:', err);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const executePlayNow = (item: { track?: Track; tracks?: Track[]; query?: string; isArtist?: boolean }) => {
+    if (item.track) {
+      if (nodeRole === 'satellite') {
+        NodeSyncService.getInstance().sendCommandToMaster({
+          action: 'load_video',
+          videoId: item.track.id,
+          title: item.track.title,
+          artist: item.track.artist
+        });
+      } else if (onSelectTrackFromQueue) {
+        onSelectTrackFromQueue(item.track, 0);
+      }
+      showToast(`▶️ Reproduciendo: "${getTrackDisplayTitle(item.track)}"`);
+    } else if (item.tracks && item.tracks.length > 0) {
+      const first = item.tracks[0];
+      const remaining = item.tracks.slice(1);
+      if (nodeRole === 'satellite') {
+        NodeSyncService.getInstance().sendCommandToMaster({
+          action: 'load_video',
+          videoId: first.id,
+          title: first.title,
+          artist: first.artist
+        });
+        if (remaining.length > 0) {
+          if (onEnqueueTracks) {
+            onEnqueueTracks(remaining, 'next');
+          } else {
+            NodeSyncService.getInstance().sendCommandToMaster({
+              action: 'enqueue',
+              tracks: remaining,
+              positionMode: 'next'
+            });
+          }
+        }
+      } else {
+        onSelectTrackFromQueue?.(first, 0);
+        if (remaining.length > 0) {
+          onEnqueueTracks?.(remaining, 'next');
+        }
+      }
+      showToast(`▶️ Reproduciendo: "${getTrackDisplayTitle(first)}"`);
+    } else if (item.query) {
+      onDirectSearch(item.query, item.isArtist);
+      showToast(`▶️ Buscando: "${item.query}"`);
+    }
+    setQueuePromptModal(null);
+  };
+
+  const executeEnqueue = (item: { track?: Track; tracks?: Track[]; query?: string }, positionMode: 'next' | 'end' = 'end') => {
+    const posText = positionMode === 'next' ? 'a continuación' : 'al final de la cola';
+    if (item.track) {
+      if (onEnqueueTracks) {
+        onEnqueueTracks(item.track, positionMode);
+      } else if (nodeRole === 'satellite') {
+        NodeSyncService.getInstance().sendCommandToMaster({
+          action: 'enqueue',
+          tracks: [item.track],
+          positionMode
+        });
+      }
+      showToast(`➕ Formada ${posText}: "${getTrackDisplayTitle(item.track)}"`);
+    } else if (item.tracks && item.tracks.length > 0) {
+      if (onEnqueueTracks) {
+        onEnqueueTracks(item.tracks, positionMode);
+      } else if (nodeRole === 'satellite') {
+        NodeSyncService.getInstance().sendCommandToMaster({
+          action: 'enqueue',
+          tracks: item.tracks,
+          positionMode
+        });
+      }
+      showToast(`➕ ${item.tracks.length} canciones formadas ${posText}`);
+    } else if (item.query) {
+      if (onEnqueueQuery) {
+        onEnqueueQuery(item.query, positionMode);
+      } else if (nodeRole === 'satellite') {
+        NodeSyncService.getInstance().sendCommandToMaster({
+          action: 'enqueue',
+          query: item.query,
+          rawQuery: item.query,
+          positionMode
+        });
+      }
+      showToast(`➕ Formando ${posText}: "${item.query}"`);
+    }
+    setQueuePromptModal(null);
+  };
+
   const handleQuickSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!quickSearchInput.trim()) return;
-    onDirectSearch(quickSearchInput.trim());
-    setQuickSearchInput('');
+    const term = quickSearchInput.trim();
+    if (!term) return;
+
+    // Ejecutar búsqueda para que el usuario pueda ver también resultados
+    performSearch(term);
+
+    // Si hay una canción sonando actualmente, preguntar: ¿Reproducir ahora o formar a la cola?
+    const isPlaying = playerState.isPlaying;
+    const hasActiveTrack = !!playerState.currentTrack || (playlistQueue && playlistQueue.length > 0);
+    if (isPlaying && hasActiveTrack) {
+      setQueuePromptModal({
+        isOpen: true,
+        query: term,
+        source: 'search_submit'
+      });
+    } else {
+      // Si no hay música sonando, reproducir directamente
+      onDirectSearch(term);
+    }
   };
 
   const formatTime = (seconds: number) => {
@@ -654,18 +823,44 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
 
           {/* 1. SILENT SEARCH & REMOTE COMMANDER BAR (BÚSQUEDA EN LA PARTE SUPERIOR) */}
           <div className="bg-zinc-900/90 border border-white/10 rounded-2xl p-4 sm:p-5 shadow-2xl backdrop-blur-md flex flex-col gap-2.5">
-            <span className="text-xs font-bold text-gray-400 tracking-wider uppercase flex items-center gap-2">
-              <Search size={14} className="text-red-500" /> BÚSQUEDA
+            <span className="text-xs font-bold text-gray-400 tracking-wider uppercase flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <Search size={14} className="text-red-500" /> BÚSQUEDA Y AGREGAR A LA COLA
+              </span>
+              {showSearchResults && (
+                <button
+                  type="button"
+                  onClick={() => setShowSearchResults(false)}
+                  className="text-[10px] text-gray-400 hover:text-white px-2 py-0.5 rounded bg-white/5 border border-white/10"
+                >
+                  ✕ Cerrar resultados
+                </button>
+              )}
             </span>
 
             <form onSubmit={handleQuickSubmit} className="flex gap-2">
-              <input
-                type="text"
-                value={quickSearchInput}
-                onChange={(e) => setQuickSearchInput(e.target.value)}
-                placeholder="Canción, artista o pega enlace de YouTube..."
-                className="flex-1 bg-black/60 border border-white/15 focus:border-red-500 rounded-xl px-3.5 py-2.5 text-sm text-white placeholder-gray-500 outline-none transition-all"
-              />
+              <div className="relative flex-1">
+                <input
+                  type="text"
+                  value={quickSearchInput}
+                  onChange={(e) => setQuickSearchInput(e.target.value)}
+                  placeholder="Buscar canción, artista o pegar enlace..."
+                  className="w-full bg-black/60 border border-white/15 focus:border-red-500 rounded-xl pl-3.5 pr-8 py-2.5 text-sm text-white placeholder-gray-500 outline-none transition-all"
+                />
+                {quickSearchInput && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuickSearchInput('');
+                      setShowSearchResults(false);
+                    }}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-xs p-1"
+                    title="Limpiar"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
               {typeof navigator !== 'undefined' && navigator.clipboard && (
                 <button
                   type="button"
@@ -674,7 +869,16 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                       const text = await navigator.clipboard.readText();
                       if (text && text.trim()) {
                         setQuickSearchInput(text.trim());
-                        onDirectSearch(text.trim());
+                        performSearch(text.trim());
+                        if (playerState.isPlaying && playerState.currentTrack) {
+                          setQueuePromptModal({
+                            isOpen: true,
+                            query: text.trim(),
+                            source: 'search_submit'
+                          });
+                        } else {
+                          onDirectSearch(text.trim());
+                        }
                       }
                     } catch (e) {
                       console.warn('Clipboard read error:', e);
@@ -691,12 +895,205 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                 type="submit"
                 className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs tracking-wider uppercase flex items-center gap-1.5 active:scale-95 transition-all shadow-md shrink-0 cursor-pointer"
               >
-                <Send size={14} /> Enviar
+                <Search size={14} /> Buscar
               </button>
             </form>
             <div className="flex items-center justify-between text-[11px] text-gray-400 font-mono pt-0.5">
-              <span>💡 Envía canciones o pega enlaces de la app de YouTube</span>
+              <span>💡 Al buscar con música sonando podrás elegir reproducir ahora o formar a la cola</span>
             </div>
+
+            {/* PANEL DE RESULTADOS DE BÚSQUEDA INTERACTIVO */}
+            {showSearchResults && (
+              <div className="mt-2 pt-3 border-t border-white/10 flex flex-col gap-2.5 animate-fadeIn">
+                <div className="flex items-center justify-between">
+                  <span className="text-[11px] font-bold text-gray-300 uppercase tracking-wider flex items-center gap-1.5">
+                    <Search size={12} className="text-red-400" />
+                    Resultados: <span className="text-red-400 font-mono">"{searchQueryLabel}"</span>
+                  </span>
+                  <div className="flex items-center gap-2">
+                    {searchResults.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedSearchTrackIds(prev => prev.length === searchResults.length ? [] : searchResults.map(t => t.id))}
+                        className="text-[10px] px-2 py-0.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10 flex items-center gap-1 cursor-pointer"
+                      >
+                        {selectedSearchTrackIds.length === searchResults.length && searchResults.length > 0 ? (
+                          <CheckSquare size={12} className="text-emerald-400" />
+                        ) : (
+                          <Square size={12} />
+                        )}
+                        <span>{selectedSearchTrackIds.length > 0 ? 'Deseleccionar' : 'Seleccionar varias'}</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setShowSearchResults(false)}
+                      className="text-[10px] px-2 py-0.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white border border-white/10 cursor-pointer"
+                    >
+                      ✕ Ocultar
+                    </button>
+                  </div>
+                </div>
+
+                {isSearching ? (
+                  <div className="py-6 flex flex-col items-center justify-center gap-2 text-gray-400 text-xs">
+                    <RefreshCw size={18} className="animate-spin text-red-500" />
+                    <span>Buscando canciones en YouTube...</span>
+                  </div>
+                ) : searchResults.length === 0 ? (
+                  <div className="py-4 text-center text-xs text-gray-500 bg-black/40 rounded-xl border border-white/5">
+                    No se encontraron canciones para "{searchQueryLabel}".
+                  </div>
+                ) : (
+                  <div className="flex flex-col gap-2 max-h-72 overflow-y-auto pr-1">
+                    {searchResults.map((track) => {
+                      const isSelected = selectedSearchTrackIds.includes(track.id);
+                      const thumb = track.thumbnail && !track.thumbnail.includes('unsplash')
+                        ? track.thumbnail
+                        : `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg`;
+
+                      return (
+                        <div
+                          key={track.id}
+                          onClick={() => {
+                            if (selectedSearchTrackIds.length > 0) {
+                              setSelectedSearchTrackIds(prev =>
+                                prev.includes(track.id) ? prev.filter(id => id !== track.id) : [...prev, track.id]
+                              );
+                            } else {
+                              if (playerState.isPlaying && playerState.currentTrack) {
+                                setQueuePromptModal({
+                                  isOpen: true,
+                                  track,
+                                  source: 'search_track'
+                                });
+                              } else {
+                                executePlayNow({ track });
+                              }
+                            }
+                          }}
+                          className={`flex items-center gap-3 p-2 rounded-xl border transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-red-950/40 border-red-500/60 shadow-[0_0_12px_rgba(220,38,38,0.2)]'
+                              : 'bg-black/50 hover:bg-white/5 border-white/10'
+                          }`}
+                        >
+                          {/* Selection Checkbox */}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedSearchTrackIds(prev =>
+                                prev.includes(track.id) ? prev.filter(id => id !== track.id) : [...prev, track.id]
+                              );
+                            }}
+                            className="p-1 text-gray-400 hover:text-white shrink-0"
+                          >
+                            {isSelected ? (
+                              <CheckSquare size={16} className="text-red-500" />
+                            ) : (
+                              <Square size={16} />
+                            )}
+                          </button>
+
+                          {/* Thumbnail */}
+                          <div className="relative w-12 h-10 rounded-lg overflow-hidden bg-black/80 shrink-0 border border-white/10">
+                            <img
+                              src={thumb}
+                              alt={getTrackDisplayTitle(track)}
+                              className="w-full h-full object-cover"
+                              referrerPolicy="no-referrer"
+                            />
+                            {track.duration && (
+                              <span className="absolute bottom-0.5 right-0.5 text-[8px] font-mono bg-black/80 px-1 rounded text-gray-300">
+                                {track.duration}
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Track Details */}
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-semibold text-white truncate">
+                              {getTrackDisplayTitle(track)}
+                            </p>
+                            <p className="text-[10px] text-gray-400 truncate mt-0.5">
+                              {getTrackDisplayArtist(track)}
+                            </p>
+                          </div>
+
+                          {/* Actions: Direct Add to Queue or Play Now */}
+                          <div className="flex items-center gap-1.5 shrink-0" onClick={e => e.stopPropagation()}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                executeEnqueue({ track }, 'end');
+                              }}
+                              className="px-2.5 py-1.5 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/40 text-emerald-300 text-[10px] font-bold tracking-wide uppercase flex items-center gap-1 active:scale-95 transition-all shadow-sm"
+                              title="Formar a la cola (sin interrumpir canción actual)"
+                            >
+                              <ListPlus size={13} />
+                              <span className="hidden sm:inline">A la cola</span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (playerState.isPlaying && playerState.currentTrack) {
+                                  setQueuePromptModal({
+                                    isOpen: true,
+                                    track,
+                                    source: 'search_track'
+                                  });
+                                } else {
+                                  executePlayNow({ track });
+                                }
+                              }}
+                              className="p-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs active:scale-95 transition-all shadow-sm"
+                              title="Reproducir ahora"
+                            >
+                              <Play size={13} className="fill-current" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Floating Multi-Select Action Bar for Search */}
+                {selectedSearchTrackIds.length > 0 && (
+                  <div className="pt-2 flex items-center justify-between gap-2 border-t border-white/10 bg-zinc-950/80 p-2 rounded-xl">
+                    <span className="text-[11px] font-mono font-bold text-red-400">
+                      {selectedSearchTrackIds.length} seleccionada(s)
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const picked = searchResults.filter(t => selectedSearchTrackIds.includes(t.id));
+                          executeEnqueue({ tracks: picked }, 'end');
+                          setSelectedSearchTrackIds([]);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] uppercase tracking-wide flex items-center gap-1"
+                      >
+                        <ListPlus size={12} /> Formar a la cola ({selectedSearchTrackIds.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const picked = searchResults.filter(t => selectedSearchTrackIds.includes(t.id));
+                          executeEnqueue({ tracks: picked }, 'next');
+                          setSelectedSearchTrackIds([]);
+                        }}
+                        className="px-2 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[10px] uppercase tracking-wide flex items-center gap-1"
+                      >
+                        <CornerDownRight size={12} /> Siguiente
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* 2. NOW PLAYING CARD & MULTIMEDIA CONTROLS */}
@@ -839,11 +1236,55 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                   </p>
                 </div>
               </div>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-1.5">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                Satelite Sync
-              </span>
+              <div className="flex items-center gap-2">
+                {displayQueue.length > 1 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsQueueSelectionMode(prev => !prev);
+                      setSelectedQueueTrackIds([]);
+                    }}
+                    className={`text-[10px] px-2.5 py-1 rounded-lg border font-semibold flex items-center gap-1.5 transition-all cursor-pointer ${
+                      isQueueSelectionMode
+                        ? 'bg-red-600 border-red-500 text-white shadow-sm'
+                        : 'bg-white/5 hover:bg-white/10 text-gray-300 border-white/10'
+                    }`}
+                    title="Seleccionar una o más canciones de la lista para formar a la cola"
+                  >
+                    {isQueueSelectionMode ? <CheckSquare size={12} /> : <Square size={12} />}
+                    <span>{isQueueSelectionMode ? 'Salir selección' : 'Seleccionar'}</span>
+                  </button>
+                )}
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-400 flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  Satelite Sync
+                </span>
+              </div>
             </div>
+
+            {/* Sub-barra de modo selección múltiple */}
+            {isQueueSelectionMode && displayQueue.length > 0 && (
+              <div className="flex items-center justify-between p-2 rounded-xl bg-zinc-950/90 border border-white/10 text-xs">
+                <span className="text-[11px] font-mono font-semibold text-gray-300">
+                  {selectedQueueTrackIds.length} de {displayQueue.length} seleccionadas
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (selectedQueueTrackIds.length === displayQueue.length) {
+                        setSelectedQueueTrackIds([]);
+                      } else {
+                        setSelectedQueueTrackIds(displayQueue.map(t => t.id));
+                      }
+                    }}
+                    className="text-[10px] px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-gray-200"
+                  >
+                    {selectedQueueTrackIds.length === displayQueue.length ? 'Deseleccionar todas' : 'Seleccionar todas'}
+                  </button>
+                </div>
+              </div>
+            )}
 
             {displayQueue.length === 0 ? (
               <div className="text-center py-6 bg-black/40 rounded-xl border border-white/5">
@@ -855,6 +1296,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
               <div className="flex flex-col gap-2 max-h-80 overflow-y-auto pr-1 select-none">
                 {displayQueue.map((track, idx) => {
                   const isCurrent = idx === 0;
+                  const isSelected = selectedQueueTrackIds.includes(track.id);
                   const thumbUrl = track.thumbnail && !track.thumbnail.includes('unsplash')
                     ? track.thumbnail
                     : (track.id ? `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg` : '');
@@ -862,27 +1304,68 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                   return (
                     <div
                       key={`${track.id}-${idx}`}
-                      onClick={() => onSelectTrackFromQueue && onSelectTrackFromQueue(track, idx)}
+                      onClick={() => {
+                        if (isQueueSelectionMode) {
+                          setSelectedQueueTrackIds(prev =>
+                            prev.includes(track.id) ? prev.filter(id => id !== track.id) : [...prev, track.id]
+                          );
+                        } else {
+                          if (isCurrent) return;
+                          if (playerState.isPlaying && playerState.currentTrack) {
+                            setQueuePromptModal({
+                              isOpen: true,
+                              track,
+                              source: 'queue_track'
+                            });
+                          } else {
+                            onSelectTrackFromQueue && onSelectTrackFromQueue(track, idx);
+                          }
+                        }
+                      }}
                       className={`group relative flex items-center gap-3 p-2.5 rounded-xl border transition-all cursor-pointer active:scale-[0.99] ${
-                        isCurrent
+                        isSelected
+                          ? 'bg-red-950/40 border-red-500/60 shadow-[0_0_12px_rgba(220,38,38,0.2)]'
+                          : isCurrent
                           ? 'bg-gradient-to-r from-red-950/50 via-zinc-900/80 to-black/60 border-red-500/60 shadow-[0_0_15px_rgba(220,38,38,0.25)]'
                           : 'bg-black/40 hover:bg-white/5 border-white/5 hover:border-white/20'
                       }`}
                     >
-                      {/* Position / Soundwave */}
-                      <div className="w-6 text-center shrink-0">
-                        {isCurrent ? (
-                          <div className="flex items-center justify-center gap-0.5 text-red-500">
-                            <span className="w-1 h-3.5 bg-red-500 rounded-full animate-pulse" />
-                            <span className="w-1 h-2 bg-red-500 rounded-full animate-pulse delay-75" />
-                            <span className="w-1 h-4 bg-red-500 rounded-full animate-pulse delay-150" />
-                          </div>
-                        ) : (
-                          <span className="text-xs font-mono text-gray-400 group-hover:text-white font-bold">
-                            #{idx + 1}
-                          </span>
-                        )}
-                      </div>
+                      {/* Checkbox en modo selección múltiple */}
+                      {isQueueSelectionMode ? (
+                        <div className="w-6 flex items-center justify-center shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedQueueTrackIds(prev =>
+                                prev.includes(track.id) ? prev.filter(id => id !== track.id) : [...prev, track.id]
+                              );
+                            }}
+                            className="text-gray-400 hover:text-white"
+                          >
+                            {isSelected ? (
+                              <CheckSquare size={16} className="text-red-500" />
+                            ) : (
+                              <Square size={16} />
+                            )}
+                          </button>
+                        </div>
+                      ) : (
+                        /* Position / Soundwave */
+                        <div className="w-6 text-center shrink-0">
+                          {isCurrent ? (
+                            <div className="flex items-center justify-center gap-0.5 text-red-500">
+                              <span className="w-1 h-3.5 bg-red-500 rounded-full animate-pulse" />
+                              <span className="w-1 h-2 bg-red-500 rounded-full animate-pulse delay-75" />
+                              <span className="w-1 h-4 bg-red-500 rounded-full animate-pulse delay-150" />
+                            </div>
+                          ) : (
+                            <span className="text-xs font-mono text-gray-400 group-hover:text-white font-bold">
+                              #{idx + 1}
+                            </span>
+                          )}
+                        </div>
+                      )}
 
                       {/* Video Thumbnail (Miniatura) */}
                       <div className="relative w-14 h-14 sm:w-16 sm:h-12 rounded-lg overflow-hidden bg-black/80 border border-white/10 shrink-0 shadow-sm">
@@ -925,29 +1408,111 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                         </p>
                       </div>
 
-                      {/* Quick Play Button */}
-                      <div className="shrink-0">
+                      {/* Action Buttons: A la cola o Reproducir ahora */}
+                      <div className="shrink-0 flex items-center gap-1.5" onClick={e => e.stopPropagation()}>
                         {isCurrent ? (
                           <span className="text-[10px] font-mono font-bold text-red-400 bg-red-950/60 border border-red-800/50 px-2 py-1 rounded-lg">
                             ACTUAL
                           </span>
+                        ) : isQueueSelectionMode ? (
+                          <span className="text-[10px] font-mono text-gray-400">
+                            {isSelected ? '✓ Seleccionada' : ''}
+                          </span>
                         ) : (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              onSelectTrackFromQueue && onSelectTrackFromQueue(track, idx);
-                            }}
-                            className="p-2 rounded-xl bg-white/5 group-hover:bg-red-600 group-hover:text-white text-gray-400 border border-white/10 group-hover:border-red-500 transition-all active:scale-95 shadow-sm"
-                            title="Reproducir ahora en el coche"
-                          >
-                            <Play size={13} className="fill-current" />
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                executeEnqueue({ track }, 'end');
+                              }}
+                              className="p-2 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 transition-all active:scale-95 shadow-sm"
+                              title="Formar a la cola (añadir al final)"
+                            >
+                              <ListPlus size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (playerState.isPlaying && playerState.currentTrack) {
+                                  setQueuePromptModal({
+                                    isOpen: true,
+                                    track,
+                                    source: 'queue_track'
+                                  });
+                                } else {
+                                  onSelectTrackFromQueue && onSelectTrackFromQueue(track, idx);
+                                }
+                              }}
+                              className="p-2 rounded-xl bg-white/5 group-hover:bg-red-600 group-hover:text-white text-gray-400 border border-white/10 group-hover:border-red-500 transition-all active:scale-95 shadow-sm"
+                              title="Reproducir ahora en el coche"
+                            >
+                              <Play size={13} className="fill-current" />
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>
                   );
                 })}
+              </div>
+            )}
+
+            {/* Floating Multi-Select Action Bar for Queue */}
+            {isQueueSelectionMode && selectedQueueTrackIds.length > 0 && (
+              <div className="pt-2 flex flex-wrap items-center justify-between gap-2 border-t border-white/10 bg-zinc-950/90 p-2.5 rounded-xl animate-fadeIn">
+                <span className="text-[11px] font-mono font-bold text-red-400">
+                  {selectedQueueTrackIds.length} seleccionada(s)
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const selected = displayQueue.filter(t => selectedQueueTrackIds.includes(t.id));
+                      executeEnqueue({ tracks: selected }, 'end');
+                      setSelectedQueueTrackIds([]);
+                      setIsQueueSelectionMode(false);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-[10px] uppercase tracking-wide flex items-center gap-1 shadow-sm active:scale-95"
+                  >
+                    <ListPlus size={12} /> Formar a la cola ({selectedQueueTrackIds.length})
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const selected = displayQueue.filter(t => selectedQueueTrackIds.includes(t.id));
+                      executeEnqueue({ tracks: selected }, 'next');
+                      setSelectedQueueTrackIds([]);
+                      setIsQueueSelectionMode(false);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-[10px] uppercase tracking-wide flex items-center gap-1 shadow-sm active:scale-95"
+                  >
+                    <CornerDownRight size={12} /> Siguiente
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const selected = displayQueue.filter(t => selectedQueueTrackIds.includes(t.id));
+                      if (selected.length > 0) {
+                        executePlayNow({ track: selected[0] });
+                        setSelectedQueueTrackIds([]);
+                        setIsQueueSelectionMode(false);
+                      }
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white font-bold text-[10px] uppercase tracking-wide flex items-center gap-1 shadow-sm active:scale-95"
+                  >
+                    <Play size={12} className="fill-current" /> Reproducir
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedQueueTrackIds([]);
+                      setIsQueueSelectionMode(false);
+                    }}
+                    className="px-2 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 text-gray-300 text-[10px]"
+                  >
+                    Cancelar
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -1052,6 +1617,190 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
           isOpen={isHostScannerOpen}
           onClose={() => setIsHostScannerOpen(false)}
         />
+
+        {/* MODAL DIÁLOGO: ¿REPRODUCIR AHORA O FORMAR A LA COLA? */}
+        {queuePromptModal && queuePromptModal.isOpen && (
+          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-end sm:items-center justify-center p-3 sm:p-4 animate-fadeIn">
+            <div className="bg-zinc-900 border border-white/20 rounded-3xl w-full max-w-lg p-5 sm:p-6 shadow-2xl flex flex-col gap-4 text-white">
+              {/* Header */}
+              <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-red-600/20 text-red-400 border border-red-500/30">
+                    <ListPlus size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-white">
+                      ¿Reproducir ahora o formar a la cola?
+                    </h3>
+                    <p className="text-xs text-gray-400">
+                      Hay música reproduciéndose en el coche.
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setQueuePromptModal(null)}
+                  className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+
+              {/* Status Comparison Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                {/* Actualmente Sonando */}
+                {playerState.currentTrack && (
+                  <div className="p-2.5 rounded-xl bg-black/60 border border-white/10 flex items-center gap-2.5">
+                    {playerState.currentTrack.thumbnail && (
+                      <img
+                        src={playerState.currentTrack.thumbnail}
+                        alt=""
+                        className="w-10 h-10 rounded-lg object-cover shrink-0 border border-white/10"
+                      />
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                        Sonando ahora
+                      </span>
+                      <p className="font-semibold text-white truncate">
+                        {getTrackDisplayTitle(playerState.currentTrack)}
+                      </p>
+                      <p className="text-[10px] text-gray-400 truncate">
+                        {getTrackDisplayArtist(playerState.currentTrack)}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Canción Solicitada */}
+                <div className="p-2.5 rounded-xl bg-red-950/30 border border-red-500/30 flex items-center gap-2.5">
+                  {queuePromptModal.track?.thumbnail ? (
+                    <img
+                      src={queuePromptModal.track.thumbnail}
+                      alt=""
+                      className="w-10 h-10 rounded-lg object-cover shrink-0 border border-red-500/30"
+                    />
+                  ) : (
+                    <div className="w-10 h-10 rounded-lg bg-black/50 border border-white/10 flex items-center justify-center text-red-400 shrink-0">
+                      <Music size={16} />
+                    </div>
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider">
+                      {queuePromptModal.tracks ? `${queuePromptModal.tracks.length} seleccionadas` : 'Canción elegida'}
+                    </span>
+                    <p className="font-semibold text-white truncate">
+                      {queuePromptModal.track
+                        ? getTrackDisplayTitle(queuePromptModal.track)
+                        : queuePromptModal.tracks
+                        ? `${queuePromptModal.tracks.length} canciones`
+                        : (queuePromptModal.query || 'Búsqueda')}
+                    </p>
+                    <p className="text-[10px] text-gray-400 truncate">
+                      {queuePromptModal.track
+                        ? getTrackDisplayArtist(queuePromptModal.track)
+                        : (queuePromptModal.query ? 'Búsqueda directa' : '')}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex flex-col gap-2 pt-1">
+                {/* 1. Formar a la cola (Opción recomendada para no interrumpir) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    executeEnqueue(queuePromptModal, 'end');
+                  }}
+                  className="w-full p-3 rounded-2xl bg-gradient-to-r from-emerald-600/30 via-emerald-600/20 to-teal-600/30 hover:from-emerald-600/40 hover:to-teal-600/40 border border-emerald-500/50 hover:border-emerald-400 text-left flex items-center justify-between transition-all active:scale-[0.99] cursor-pointer shadow-lg group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-xl bg-emerald-500 text-black font-black shrink-0">
+                      <ListPlus size={18} />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-emerald-300 group-hover:text-emerald-200 flex items-center gap-1.5">
+                        Formar al final de la cola
+                        <span className="text-[10px] font-mono bg-emerald-500/20 text-emerald-300 px-1.5 py-0.2 rounded border border-emerald-500/40">
+                          Sin interrumpir
+                        </span>
+                      </h4>
+                      <p className="text-xs text-gray-300">
+                        Sigue sonando la canción actual. Se añadirá a las próximas pistas.
+                      </p>
+                    </div>
+                  </div>
+                  <Check size={18} className="text-emerald-400 opacity-60 group-hover:opacity-100 shrink-0 ml-2" />
+                </button>
+
+                {/* 2. Reproducir a continuación (Siguiente pista en cola) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    executeEnqueue(queuePromptModal, 'next');
+                  }}
+                  className="w-full p-3 rounded-2xl bg-gradient-to-r from-indigo-600/30 via-violet-600/20 to-purple-600/30 hover:from-indigo-600/40 hover:to-purple-600/40 border border-indigo-500/50 hover:border-indigo-400 text-left flex items-center justify-between transition-all active:scale-[0.99] cursor-pointer shadow-lg group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-xl bg-indigo-500 text-white font-black shrink-0">
+                      <CornerDownRight size={18} />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-indigo-300 group-hover:text-indigo-200">
+                        Reproducir a continuación
+                      </h4>
+                      <p className="text-xs text-gray-300">
+                        Sonará exactamente cuando termine la canción que suena ahora.
+                      </p>
+                    </div>
+                  </div>
+                </button>
+
+                {/* 3. Reproducir ahora (Interrumpe de inmediato) */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    executePlayNow(queuePromptModal);
+                  }}
+                  className="w-full p-3 rounded-2xl bg-gradient-to-r from-red-600/30 via-rose-600/20 to-red-700/30 hover:from-red-600/40 hover:to-red-700/40 border border-red-500/50 hover:border-red-400 text-left flex items-center justify-between transition-all active:scale-[0.99] cursor-pointer shadow-lg group"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-xl bg-red-600 text-white font-black shrink-0">
+                      <Play size={18} className="fill-current" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-red-300 group-hover:text-red-200">
+                        Reproducir ahora
+                      </h4>
+                      <p className="text-xs text-gray-400">
+                        Interrumpe la canción actual y empieza a sonar en el coche de inmediato.
+                      </p>
+                    </div>
+                  </div>
+                </button>
+              </div>
+
+              {/* Cancel Button */}
+              <button
+                type="button"
+                onClick={() => setQueuePromptModal(null)}
+                className="w-full py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-gray-400 hover:text-white text-xs font-semibold tracking-wider uppercase transition-all"
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* FLOATING SATELLITE TOAST FEEDBACK */}
+        {satelliteToast && (
+          <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-zinc-900 border border-emerald-500/60 text-white px-4 py-2.5 rounded-2xl shadow-[0_0_25px_rgba(16,185,129,0.3)] flex items-center gap-2.5 text-xs font-bold animate-bounce">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+            <span>{satelliteToast}</span>
+          </div>
+        )}
       </div>
     );
   }
