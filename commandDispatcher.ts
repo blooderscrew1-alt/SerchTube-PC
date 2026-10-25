@@ -1152,6 +1152,11 @@ export class CommandDispatcher {
       resolved.intent === 'MUTE' ||
       resolved.intent === 'UNMUTE';
 
+    // ENQUEUE / AGREGAR A LA COLA NUNCA participa en el arbitraje de turnos:
+    // añadir una canción no interrumpe la reproducción y el usuario puede
+    // encolar varias seguidas sin que las órdenes se descarten entre sí.
+    const isQueueControl = resolved.intent === 'ENQUEUE';
+
     // 🎙️ master_mic_active: La PC Host notificó que abrió su micrófono (localmente o por voz)
     if (
       payload.action === 'master_mic_active' ||
@@ -1218,7 +1223,7 @@ export class CommandDispatcher {
       return;
     }
 
-    if (!isVolumeControl) {
+    if (!isVolumeControl && !isQueueControl) {
       const activeTurn = this.roomActiveTurns.get(room);
       if (activeTurn && (now - activeTurn.timestamp < 4000)) {
         const elapsed = now - activeTurn.timestamp;
@@ -1257,8 +1262,8 @@ export class CommandDispatcher {
       return;
     }
 
-    // Registrar el turno actual solo para peticiones musicales (nunca para volumen)
-    if (!isVolumeControl) {
+    // Registrar el turno actual solo para peticiones musicales (nunca para volumen ni encolado)
+    if (!isVolumeControl && !isQueueControl) {
       this.roomActiveTurns.set(room, {
         timestamp: now,
         nodeId,
@@ -1400,9 +1405,28 @@ export class CommandDispatcher {
 
       case 'ENQUEUE': {
         const payloadAny = payload as any;
-        const tracks = payloadAny.tracks;
-        const directVideoId = payloadAny.videoId || payloadAny.command?.videoId || payloadAny.data?.videoId;
-        const positionMode = payloadAny.positionMode || 'end';
+        // El mando web envía las pistas dentro de `payload` (y algunas apps
+        // Android en `data`/`command`). Hay que aceptar todas las variantes:
+        // antes solo se miraba el nivel superior y la orden se descartaba.
+        const innerAny = (payloadAny.payload && typeof payloadAny.payload === 'object')
+          ? payloadAny.payload
+          : (payloadAny.data && typeof payloadAny.data === 'object')
+            ? payloadAny.data
+            : {};
+        const commandAny = (payloadAny.command && typeof payloadAny.command === 'object')
+          ? payloadAny.command
+          : {};
+        const tracks = [payloadAny.tracks, innerAny.tracks, payloadAny.data?.tracks, commandAny.tracks]
+          .find((candidate: any) => Array.isArray(candidate) && candidate.length > 0) || [];
+        const singleTrack = [payloadAny.track, innerAny.track, payloadAny.data?.track, commandAny.track]
+          .find((candidate: any) => candidate && typeof candidate === 'object') || null;
+        const directVideoId =
+          payloadAny.videoId || innerAny.videoId || payloadAny.data?.videoId || commandAny.videoId ||
+          payloadAny.id || innerAny.id || payloadAny.data?.id || commandAny.id ||
+          singleTrack?.id || singleTrack?.videoId;
+        const positionMode =
+          payloadAny.positionMode || innerAny.positionMode || payloadAny.data?.positionMode ||
+          commandAny.positionMode || 'end';
 
         if (Array.isArray(tracks) && tracks.length > 0) {
           const browserPayload: PlayerBrowserEvent = {
@@ -1426,11 +1450,20 @@ export class CommandDispatcher {
 
         if (directVideoId) {
           const video = {
-            videoId: directVideoId,
-            title: payloadAny.title || payloadAny.command?.title || 'Canción',
-            artist: payloadAny.artist || payloadAny.command?.artist || '',
-            thumbnail: payloadAny.thumbnail || payloadAny.command?.thumbnail || `https://i.ytimg.com/vi/${directVideoId}/hqdefault.jpg`,
-            duration: payloadAny.duration || '3:45'
+            videoId: String(directVideoId),
+            title:
+              singleTrack?.title || payloadAny.title || innerAny.title || payloadAny.data?.title ||
+              commandAny.title || 'Canción',
+            artist:
+              singleTrack?.artist || payloadAny.artist || innerAny.artist || payloadAny.data?.artist ||
+              commandAny.artist || '',
+            thumbnail:
+              singleTrack?.thumbnail || payloadAny.thumbnail || innerAny.thumbnail ||
+              payloadAny.data?.thumbnail || commandAny.thumbnail ||
+              `https://i.ytimg.com/vi/${directVideoId}/hqdefault.jpg`,
+            duration:
+              singleTrack?.duration || payloadAny.duration || innerAny.duration ||
+              payloadAny.data?.duration || commandAny.duration || '3:45'
           };
           const browserPayload: PlayerBrowserEvent = {
             event: 'ENQUEUE',

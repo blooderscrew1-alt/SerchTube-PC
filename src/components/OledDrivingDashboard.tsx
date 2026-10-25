@@ -572,7 +572,9 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
   };
 
   const executeEnqueue = (item: { track?: Track; tracks?: Track[]; query?: string }, positionMode: 'next' | 'end' = 'end') => {
-    const posText = positionMode === 'next' ? 'a continuación' : 'al final de la cola';
+    const isNext = positionMode === 'next';
+    const posText = isNext ? 'A continuación' : 'Al final de la cola';
+    const icon = isNext ? '▶️' : '➕';
     if (item.track) {
       if (onEnqueueTracks) {
         onEnqueueTracks(item.track, positionMode);
@@ -583,7 +585,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
           positionMode
         });
       }
-      showToast(`➕ Formada ${posText}: "${getTrackDisplayTitle(item.track)}"`);
+      showToast(`${icon} ${posText}: "${getTrackDisplayTitle(item.track)}"`);
     } else if (item.tracks && item.tracks.length > 0) {
       if (onEnqueueTracks) {
         onEnqueueTracks(item.tracks, positionMode);
@@ -594,7 +596,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
           positionMode
         });
       }
-      showToast(`➕ ${item.tracks.length} canciones formadas ${posText}`);
+      showToast(`${icon} ${posText}: ${item.tracks.length} canciones`);
     } else if (item.query) {
       if (onEnqueueQuery) {
         onEnqueueQuery(item.query, positionMode);
@@ -606,7 +608,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
           positionMode
         });
       }
-      showToast(`➕ Formando ${posText}: "${item.query}"`);
+      showToast(`${icon} ${posText}: "${item.query}"`);
     }
     setQueuePromptModal(null);
   };
@@ -1620,19 +1622,19 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
 
         {/* MODAL DIÁLOGO: ¿REPRODUCIR AHORA O FORMAR A LA COLA? */}
         {queuePromptModal && queuePromptModal.isOpen && (
-          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-end sm:items-center justify-center p-3 sm:p-4 animate-fadeIn">
-            <div className="bg-zinc-900 border border-white/20 rounded-3xl w-full max-w-lg p-5 sm:p-6 shadow-2xl flex flex-col gap-4 text-white">
+          <div className="fixed inset-0 z-[80] bg-black/85 backdrop-blur-md flex items-end sm:items-center justify-center p-2 sm:p-4 animate-fadeIn">
+            <div className="bg-zinc-900 border border-white/20 rounded-3xl w-full max-w-lg p-4 sm:p-6 shadow-2xl flex flex-col gap-3 sm:gap-4 text-white max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain pb-[max(1rem,env(safe-area-inset-bottom))]">
               {/* Header */}
-              <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <div className="flex items-center justify-between pb-2 sm:pb-3 border-b border-white/10">
                 <div className="flex items-center gap-2.5">
                   <div className="p-2 rounded-xl bg-red-600/20 text-red-400 border border-red-500/30">
                     <ListPlus size={20} />
                   </div>
                   <div>
-                    <h3 className="text-base font-bold text-white">
+                    <h3 className="text-sm sm:text-base font-bold text-white">
                       ¿Reproducir ahora o formar a la cola?
                     </h3>
-                    <p className="text-xs text-gray-400">
+                    <p className="text-[11px] sm:text-xs text-gray-400">
                       Hay música reproduciéndose en el coche.
                     </p>
                   </div>
@@ -1647,26 +1649,26 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
               </div>
 
               {/* Status Comparison Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+              <div className="grid grid-cols-2 gap-2 text-xs">
                 {/* Actualmente Sonando */}
                 {playerState.currentTrack && (
-                  <div className="p-2.5 rounded-xl bg-black/60 border border-white/10 flex items-center gap-2.5">
+                  <div className="p-2 rounded-xl bg-black/60 border border-white/10 flex items-center gap-2">
                     {playerState.currentTrack.thumbnail && (
                       <img
                         src={playerState.currentTrack.thumbnail}
                         alt=""
-                        className="w-10 h-10 rounded-lg object-cover shrink-0 border border-white/10"
+                        className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg object-cover shrink-0 border border-white/10"
                       />
                     )}
                     <div className="min-w-0 flex-1">
-                      <span className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-1">
+                      <span className="text-[9px] sm:text-[10px] text-emerald-400 font-bold uppercase tracking-wider flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
                         Sonando ahora
                       </span>
-                      <p className="font-semibold text-white truncate">
+                      <p className="font-semibold text-white truncate text-[11px] sm:text-xs">
                         {getTrackDisplayTitle(playerState.currentTrack)}
                       </p>
-                      <p className="text-[10px] text-gray-400 truncate">
+                      <p className="text-[9px] sm:text-[10px] text-gray-400 truncate">
                         {getTrackDisplayArtist(playerState.currentTrack)}
                       </p>
                     </div>
@@ -1674,30 +1676,30 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                 )}
 
                 {/* Canción Solicitada */}
-                <div className="p-2.5 rounded-xl bg-red-950/30 border border-red-500/30 flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-red-950/30 border border-red-500/30 flex items-center gap-2">
                   {queuePromptModal.track?.thumbnail ? (
                     <img
                       src={queuePromptModal.track.thumbnail}
                       alt=""
-                      className="w-10 h-10 rounded-lg object-cover shrink-0 border border-red-500/30"
+                      className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg object-cover shrink-0 border border-red-500/30"
                     />
                   ) : (
-                    <div className="w-10 h-10 rounded-lg bg-black/50 border border-white/10 flex items-center justify-center text-red-400 shrink-0">
+                    <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg bg-black/50 border border-white/10 flex items-center justify-center text-red-400 shrink-0">
                       <Music size={16} />
                     </div>
                   )}
                   <div className="min-w-0 flex-1">
-                    <span className="text-[10px] text-red-400 font-bold uppercase tracking-wider">
+                    <span className="text-[9px] sm:text-[10px] text-red-400 font-bold uppercase tracking-wider">
                       {queuePromptModal.tracks ? `${queuePromptModal.tracks.length} seleccionadas` : 'Canción elegida'}
                     </span>
-                    <p className="font-semibold text-white truncate">
+                    <p className="font-semibold text-white truncate text-[11px] sm:text-xs">
                       {queuePromptModal.track
                         ? getTrackDisplayTitle(queuePromptModal.track)
                         : queuePromptModal.tracks
                         ? `${queuePromptModal.tracks.length} canciones`
                         : (queuePromptModal.query || 'Búsqueda')}
                     </p>
-                    <p className="text-[10px] text-gray-400 truncate">
+                    <p className="text-[9px] sm:text-[10px] text-gray-400 truncate">
                       {queuePromptModal.track
                         ? getTrackDisplayArtist(queuePromptModal.track)
                         : (queuePromptModal.query ? 'Búsqueda directa' : '')}
@@ -1707,14 +1709,14 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
               </div>
 
               {/* Action Buttons */}
-              <div className="flex flex-col gap-2 pt-1">
+              <div className="flex flex-col gap-2 pt-0.5">
                 {/* 1. Formar a la cola (Opción recomendada para no interrumpir) */}
                 <button
                   type="button"
                   onClick={() => {
                     executeEnqueue(queuePromptModal, 'end');
                   }}
-                  className="w-full p-3 rounded-2xl bg-gradient-to-r from-emerald-600/30 via-emerald-600/20 to-teal-600/30 hover:from-emerald-600/40 hover:to-teal-600/40 border border-emerald-500/50 hover:border-emerald-400 text-left flex items-center justify-between transition-all active:scale-[0.99] cursor-pointer shadow-lg group"
+                  className="w-full p-2.5 sm:p-3 rounded-2xl bg-gradient-to-r from-emerald-600/30 via-emerald-600/20 to-teal-600/30 hover:from-emerald-600/40 hover:to-teal-600/40 border border-emerald-500/50 hover:border-emerald-400 text-left flex items-center justify-between transition-all active:scale-[0.99] cursor-pointer shadow-lg group"
                 >
                   <div className="flex items-center gap-3">
                     <div className="p-2 rounded-xl bg-emerald-500 text-black font-black shrink-0">
@@ -1727,7 +1729,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                           Sin interrumpir
                         </span>
                       </h4>
-                      <p className="text-xs text-gray-300">
+                      <p className="text-[11px] sm:text-xs text-gray-300">
                         Sigue sonando la canción actual. Se añadirá a las próximas pistas.
                       </p>
                     </div>
@@ -1741,7 +1743,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                   onClick={() => {
                     executeEnqueue(queuePromptModal, 'next');
                   }}
-                  className="w-full p-3 rounded-2xl bg-gradient-to-r from-indigo-600/30 via-violet-600/20 to-purple-600/30 hover:from-indigo-600/40 hover:to-purple-600/40 border border-indigo-500/50 hover:border-indigo-400 text-left flex items-center justify-between transition-all active:scale-[0.99] cursor-pointer shadow-lg group"
+                  className="w-full p-2.5 sm:p-3 rounded-2xl bg-gradient-to-r from-indigo-600/30 via-violet-600/20 to-purple-600/30 hover:from-indigo-600/40 hover:to-purple-600/40 border border-indigo-500/50 hover:border-indigo-400 text-left flex items-center justify-between transition-all active:scale-[0.99] cursor-pointer shadow-lg group"
                 >
                   <div className="flex items-center gap-3">
                     <div className="p-2 rounded-xl bg-indigo-500 text-white font-black shrink-0">
@@ -1751,7 +1753,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                       <h4 className="text-sm font-bold text-indigo-300 group-hover:text-indigo-200">
                         Reproducir a continuación
                       </h4>
-                      <p className="text-xs text-gray-300">
+                      <p className="text-[11px] sm:text-xs text-gray-300">
                         Sonará exactamente cuando termine la canción que suena ahora.
                       </p>
                     </div>
@@ -1764,7 +1766,7 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                   onClick={() => {
                     executePlayNow(queuePromptModal);
                   }}
-                  className="w-full p-3 rounded-2xl bg-gradient-to-r from-red-600/30 via-rose-600/20 to-red-700/30 hover:from-red-600/40 hover:to-red-700/40 border border-red-500/50 hover:border-red-400 text-left flex items-center justify-between transition-all active:scale-[0.99] cursor-pointer shadow-lg group"
+                  className="w-full p-2.5 sm:p-3 rounded-2xl bg-gradient-to-r from-red-600/30 via-rose-600/20 to-red-700/30 hover:from-red-600/40 hover:to-red-700/40 border border-red-500/50 hover:border-red-400 text-left flex items-center justify-between transition-all active:scale-[0.99] cursor-pointer shadow-lg group"
                 >
                   <div className="flex items-center gap-3">
                     <div className="p-2 rounded-xl bg-red-600 text-white font-black shrink-0">

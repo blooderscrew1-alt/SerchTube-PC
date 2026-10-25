@@ -493,7 +493,7 @@ export class NodeSyncService {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
 
     const action = command.action || command.command || command.event || '';
-    const query = command.query || command.rawQuery || command.track || command.artist || '';
+    const query = command.query || command.rawQuery || command.artist || '';
     const volume = command.volumeValue ?? command.volume ?? command.value;
     const time = command.seekTime ?? command.time ?? command.position ?? command.targetTime;
     const offset = command.offset ?? command.seconds ?? command.delta;
@@ -517,6 +517,15 @@ export class NodeSyncService {
       videoId: command.videoId || command.id,
       title: command.title,
       artist: command.artist,
+      // 🎵 ENCOLADO: las pistas viajan también en el nivel superior.
+      // El CommandDispatcher y cualquier receptor pueden leerlas sin tener
+      // que adivinar si vienen en `payload`; antes se perdían y "Reproducir
+      // a continuación" no hacía nada.
+      tracks: Array.isArray(command.tracks) ? command.tracks : undefined,
+      track: command.track,
+      positionMode: command.positionMode,
+      thumbnail: command.thumbnail,
+      duration: command.duration,
       nodeId: this.config.nodeId,
       nodeName: this.config.nodeName,
       room: this.config.room,

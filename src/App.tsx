@@ -1522,11 +1522,19 @@ export default function App() {
           action === 'mute' ||
           action === 'unmute';
 
+        const isEnqueueAction =
+          action === 'enqueue' ||
+          action === 'add_to_queue' ||
+          action === 'queue_add';
+
         const isDirectControlAction =
           isVolumeAction ||
           action === 'reload_player' ||
           action === 'refresh_player' ||
-          action === 'open_youtube_auth';
+          action === 'open_youtube_auth' ||
+          action === 'enqueue' ||
+          action === 'add_to_queue' ||
+          action === 'queue_add';
 
         // 🛡️ Arbitraje de Turno Único: Solo para peticiones de voz o búsquedas entre micrófonos concurrentes
         if (!isDirectControlAction && !tryAcquireTurn(`nodo_${nodeName}`, rawText || action)) {
@@ -1547,6 +1555,14 @@ export default function App() {
             if (action === 'volume_set' && prev.action === 'volume_set') {
               const currentVol = commandPayload.volumeValue ?? commandPayload.volume ?? commandPayload.value;
               return prev.volumeVal === currentVol && now - prev.timestamp < 250;
+            }
+            return false;
+          }
+          if (isEnqueueAction) {
+            // Encolar varias canciones seguidas es normal: solo se descarta
+            // un duplicado idéntico (misma búsqueda) en una ventana corta.
+            if (normQuery && prev.query && normalizeText(prev.query) === normQuery) {
+              return now - prev.timestamp < 800;
             }
             return false;
           }
@@ -3624,9 +3640,17 @@ export default function App() {
   // Añadir una o varias canciones a la cola sin interrumpir la pista actual
   const handleEnqueueTracks = useCallback((incomingTracks: Track | Track[], positionMode: 'next' | 'end' = 'end') => {
     const rawList = Array.isArray(incomingTracks) ? incomingTracks : [incomingTracks];
-    const validTracks = rawList
+    const cleanedList = rawList
       .map(t => cleanQueueTrack(t))
       .filter(t => t && t.id);
+
+    // Evitar duplicados dentro de la propia petición (multi-selección)
+    const seenIncoming = new Set<string>();
+    const validTracks = cleanedList.filter(t => {
+      if (seenIncoming.has(t.id)) return false;
+      seenIncoming.add(t.id);
+      return true;
+    });
 
     if (validTracks.length === 0) return;
 
@@ -3648,9 +3672,12 @@ export default function App() {
     // En el Master (Host / Coche):
     // Si no hay música sonando y la cola está vacía, reproducir la primera de inmediato
     const isPlaying = playerStateRef.current.isPlaying;
-    const hasTrack = !!playerStateRef.current.currentTrack;
-    if (!isPlaying && !hasTrack && playlistQueueRef.current.length === 0) {
+    const currentTrack = playerStateRef.current.currentTrack;
+    const currentQueue = playlistQueueRef.current || [];
+    if (!isPlaying && !currentTrack && currentQueue.length === 0) {
       const first = validTracks[0];
+      playlistQueueRef.current = validTracks;
+      playlistIndexRef.current = 0;
       setPlaylistQueue(validTracks);
       setPlaylistIndex(0);
       setPlayerState(prev => ({
@@ -3670,39 +3697,74 @@ export default function App() {
       return;
     }
 
-    setPlaylistQueue(prevQueue => {
-      let updatedQueue: Track[];
-      if (positionMode === 'next') {
-        const insertIdx = Math.min(prevQueue.length, playlistIndexRef.current + 1);
-        updatedQueue = [
-          ...prevQueue.slice(0, insertIdx),
-          ...validTracks,
-          ...prevQueue.slice(insertIdx)
-        ];
-      } else {
-        updatedQueue = [...prevQueue, ...validTracks];
-      }
+    // La canción que ya suena no puede encolarse como "siguiente": la cola
+    // deduplica por id y desaparecería de la vista. Para repetirla está
+    // "Reproducir ahora".
+    const usableTracks = validTracks.filter(t => t.id !== currentTrack?.id);
+    if (usableTracks.length === 0) {
+      setAssistantResponse('Esa canción ya está sonando ahora mismo');
+      return;
+    }
 
-      try {
-        localStorage.setItem('serchtube_playlist_queue', JSON.stringify(updatedQueue));
-      } catch (_) {}
+    // Si alguna de las canciones ya estaba más abajo en la cola, se mueve a la
+    // posición solicitada en vez de crear una copia invisible.
+    const usableIds = new Set(usableTracks.map(t => t.id));
+    let baseQueue = currentQueue.filter(t => t.id && !usableIds.has(t.id));
 
-      return updatedQueue;
-    });
+    // 🛡️ Localizar el índice REAL de la canción actual. `playlistIndex` puede
+    // estar desfasado (radio, "Más vídeos", satélite...), y antes se insertaba
+    // la pista después de una canción equivocada y no sonaba a continuación.
+    let currentIndex = currentTrack?.id
+      ? baseQueue.findIndex(t => t.id === currentTrack.id)
+      : -1;
+    if (currentTrack?.id && currentIndex < 0) {
+      // La pista actual no estaba en la cola: se integra para que la cola
+      // quede coherente y "siguiente" sea realmente la siguiente.
+      baseQueue = [currentTrack, ...baseQueue];
+      currentIndex = 0;
+    }
+    if (currentIndex < 0) {
+      currentIndex = Math.max(0, Math.min(playlistIndexRef.current, Math.max(0, baseQueue.length - 1)));
+    }
+
+    const insertIdx = positionMode === 'next'
+      ? Math.min(baseQueue.length, currentIndex + 1)
+      : baseQueue.length;
+
+    const updatedQueue = [
+      ...baseQueue.slice(0, insertIdx),
+      ...usableTracks,
+      ...baseQueue.slice(insertIdx)
+    ];
+
+    // Actualizar las referencias ANTES de difundir: así el satélite recibe la
+    // cola nueva (con la canción en la posición correcta) y no la anterior.
+    playlistQueueRef.current = updatedQueue;
+    playlistIndexRef.current = currentIndex;
+    setPlaylistQueue(updatedQueue);
+    setPlaylistIndex(currentIndex);
+    try {
+      localStorage.setItem('serchtube_playlist_queue', JSON.stringify(updatedQueue));
+      localStorage.setItem('serchtube_playlist_index', String(currentIndex));
+    } catch (_) {}
 
     AudioEngine.getInstance().playBeep('up');
-    const count = validTracks.length;
+    const count = usableTracks.length;
     const label = count === 1
-      ? `➕ Formada a la cola: "${getTrackDisplayTitle(validTracks[0])}"`
-      : `➕ ${count} canciones formadas a la cola`;
+      ? positionMode === 'next'
+        ? `▶️ A continuación: "${getTrackDisplayTitle(usableTracks[0])}"`
+        : `➕ Formada a la cola: "${getTrackDisplayTitle(usableTracks[0])}"`
+      : positionMode === 'next'
+        ? `▶️ ${count} canciones a continuación`
+        : `➕ ${count} canciones formadas a la cola`;
     setAssistantResponse(label);
 
-    setTimeout(() => {
-      NodeSyncService.getInstance().broadcastMasterState(
-        playerStateRef.current,
-        getUpcomingQueueRef.current()
-      );
-    }, 60);
+    // Difusión inmediata con la cola ya recalculada (sin esperas que enviaban
+    // el estado viejo y hacían parecer que la canción no se había añadido).
+    NodeSyncService.getInstance().broadcastMasterState(
+      playerStateRef.current,
+      getUpcomingQueueRef.current()
+    );
   }, []);
 
   // Formar a la cola a partir de búsqueda por texto / enlace
@@ -3861,6 +3923,8 @@ export default function App() {
 
           setPlaylistQueue(formattedItems.length > 0 ? formattedItems : [newTrack]);
           setPlaylistIndex(0);
+          playlistQueueRef.current = formattedItems.length > 0 ? formattedItems : [newTrack];
+          playlistIndexRef.current = 0;
 
           // Si hay menos de 10 canciones, enriquecer en segundo plano con más canciones del artista / radio
           if (formattedItems.length < 10 && newTrack.id) {
@@ -3884,7 +3948,11 @@ export default function App() {
                     freshTracks.push(it);
                   }
                   if (freshTracks.length > 0) {
-                    setPlaylistQueue(prev => [...prev, ...freshTracks]);
+                    setPlaylistQueue(prev => {
+                      const merged = [...prev, ...freshTracks];
+                      playlistQueueRef.current = merged;
+                      return merged;
+                    });
                   }
                 }
               })
@@ -3893,6 +3961,8 @@ export default function App() {
         } else {
           setPlaylistQueue([newTrack]);
           setPlaylistIndex(0);
+          playlistQueueRef.current = [newTrack];
+          playlistIndexRef.current = 0;
         }
 
         setIsScreensaverActive(false);
