@@ -5,8 +5,13 @@
   to { opacity: 1; transform: scale(1); }
 }
 
+/* Sin "forwards": al terminar la animación el elemento vuelve a su estilo
+   normal (sin transform). Un transform permanente convierte al elemento en el
+   bloque contenedor de sus descendientes "position: fixed", y por eso los
+   menús/modales flotantes acababan al final de la página en vez de en la
+   pantalla. El último fotograma ya es scale(1), así que no cambia el aspecto. */
 .animate-fadeIn {
-  animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  animation: fadeIn 0.25s cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Enclosed Microphone in Orb Animations */

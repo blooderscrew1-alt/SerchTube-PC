@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Track, PlayerState, SystemStatus, NodeRole, DisplayVisualConfig, VideoQuality, AutoVolumeReducerConfig, AutoShutdownConfig, WaveStyle, WAVE_STYLES_INFO, OrbStyle, ORB_STYLES_INFO, BottomBarElementId, BottomBarItemConfig, BottomBarLayoutConfig } from '../types';
 import { ReactiveOrb } from './ReactiveOrb';
 import { YouTubePlayer } from './YouTubePlayer';
@@ -1620,8 +1621,14 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
           onClose={() => setIsHostScannerOpen(false)}
         />
 
-        {/* MODAL DIÁLOGO: ¿REPRODUCIR AHORA O FORMAR A LA COLA? */}
-        {queuePromptModal && queuePromptModal.isOpen && (
+        {/* MODAL DIÁLOGO: ¿REPRODUCIR AHORA O FORMAR A LA COLA?
+            Se dibuja en <body> con un portal: dentro del panel OLED hay
+            ancestros con transform (animate-fadeIn), y eso convierte a
+            "fixed" en relativo al panel, que es mucho más alto que la
+            pantalla. Por eso el menú aparecía al final de la página y había
+            que deslizar para encontrarlo. Con el portal queda siempre
+            centrado en la ventana al instante. */}
+        {queuePromptModal && queuePromptModal.isOpen && createPortal(
           <div className="fixed inset-0 z-[80] bg-black/85 backdrop-blur-md flex items-end sm:items-center justify-center p-2 sm:p-4 animate-fadeIn">
             <div className="bg-zinc-900 border border-white/20 rounded-3xl w-full max-w-lg p-4 sm:p-6 shadow-2xl flex flex-col gap-3 sm:gap-4 text-white max-h-[calc(100dvh-1rem)] overflow-y-auto overscroll-contain pb-[max(1rem,env(safe-area-inset-bottom))]">
               {/* Header */}
@@ -1793,9 +1800,9 @@ const OledDrivingDashboardComponent: React.FC<OledDrivingDashboardProps> = ({
                 Cancelar
               </button>
             </div>
-          </div>
+          </div>,
+          document.body
         )}
-
         {/* FLOATING SATELLITE TOAST FEEDBACK */}
         {satelliteToast && (
           <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-zinc-900 border border-emerald-500/60 text-white px-4 py-2.5 rounded-2xl shadow-[0_0_25px_rgba(16,185,129,0.3)] flex items-center gap-2.5 text-xs font-bold animate-bounce">
