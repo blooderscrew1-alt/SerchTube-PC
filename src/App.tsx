@@ -626,6 +626,7 @@ export default function App() {
       wakeWordEnabled: false,
       wakeWord: 'música',
       satelliteMicOnly: false,
+      audioInputDeviceId: 'default',
       delayedMicActivationEnabled: false,
       delayedMicSeconds: 3
     };
@@ -633,9 +634,15 @@ export default function App() {
       const saved = localStorage.getItem('serchtube_speech_config');
       if (saved) {
         const cfg: SpeechConfig = { ...defaultConfig, ...JSON.parse(saved) };
-        // La opción "Todos (Multi-Mic)" ya no existe: si quedó guardada, se pasa al
-        // micrófono predeterminado del sistema (que es el que usa el motor de voz).
-        if (cfg.audioInputDeviceId === 'all' || cfg.audioInputDeviceId === 'todos') {
+        // Las opciones "Todos (Multi-Mic)" y "communications" ya no existen en el
+        // selector actual. El motor de voz siempre usa el micrófono predeterminado
+        // del sistema, así que migramos esos valores antiguos a "default" para que
+        // el vúmetro y las pruebas apunten al mismo dispositivo que el asistente.
+        if (
+          cfg.audioInputDeviceId === 'all' ||
+          cfg.audioInputDeviceId === 'todos' ||
+          cfg.audioInputDeviceId === 'communications'
+        ) {
           cfg.audioInputDeviceId = 'default';
         }
         // Volumen del ducking: se guarda en pasos de 10 (0-100). 0 = silencio total.
@@ -1359,7 +1366,7 @@ export default function App() {
       if (!document.fullscreenElement && visualConfig.autoFullscreenOnStartup !== false) {
         requestFullscreenSafely();
       }
-      if (speechConfigRef.current.continuousListening) {
+      if (speechConfigRef.current.continuousListening || speechConfigRef.current.wakeWordEnabled) {
         SpeechService.getInstance().startListening();
       }
       window.removeEventListener('pointerdown', onFirstUserGesture, true);
@@ -1912,6 +1919,16 @@ export default function App() {
             setSystemStatus('idle');
             setIsListening(false);
           }
+        } else if (status === 'error') {
+          setSystemStatus('error');
+          setIsListening(false);
+          const detail = SpeechService.getInstance().getLastRecognitionError();
+          if (detail) {
+            setAssistantResponse(`⚠️ ${detail}`);
+            setTimeout(() => {
+              setAssistantResponse(prev => (prev === `⚠️ ${detail}` ? null : prev));
+            }, 8000);
+          }
         } else {
           setSystemStatus(status);
           setIsListening(false);
@@ -1919,7 +1936,9 @@ export default function App() {
       }
     );
 
-    if (speechConfig.continuousListening) {
+    // La palabra clave también requiere el micrófono abierto. Si el usuario la
+    // activó pero "escucha continua" quedó apagada, antes no se iniciaba nada.
+    if (speechConfig.continuousListening || speechConfig.wakeWordEnabled) {
       speechService.startListening();
     }
 
@@ -2421,6 +2440,10 @@ export default function App() {
       }
     } catch (e) {
       console.warn("Voice command dispatch error:", e);
+      setAssistantResponse('⚠️ No pude procesar la orden. Verificá que el servidor local de SerchTube esté corriendo (http://localhost:3000).');
+      setTimeout(() => {
+        setAssistantResponse(prev => (prev && prev.includes('No pude procesar la orden') ? null : prev));
+      }, 8000);
     } finally {
       setSystemStatus('idle');
       speech.setProcessingCommand(false);

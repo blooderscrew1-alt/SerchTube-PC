@@ -571,6 +571,9 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
   const [isTestingMic, setIsTestingMic] = useState<boolean>(false);
   const [micTestVolume, setMicTestVolume] = useState<number>(0);
   const [micPermissionGranted, setMicPermissionGranted] = useState<boolean>(false);
+  const [speechDiagnostics, setSpeechDiagnostics] = useState(() =>
+    SpeechService.getInstance().getRecognitionDiagnostics()
+  );
 
   // ─── "Iniciar con Windows" (autoinicio al encender la PC) ───
   const [autoStartEnabled, setAutoStartEnabled] = useState<boolean>(false);
@@ -717,6 +720,17 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
       stopMicTest();
     }
   };
+
+  // Estado real del motor de voz (no del vúmetro). Se refresca mientras
+  // Ajustes está abierto para que un audio-capture / language-not-supported
+  // se vea aquí en vez de quedar sólo en la consola del navegador.
+  useEffect(() => {
+    if (!isOpen) return;
+    const refresh = () => setSpeechDiagnostics(SpeechService.getInstance().getRecognitionDiagnostics());
+    refresh();
+    const timer = setInterval(refresh, 1500);
+    return () => clearInterval(timer);
+  }, [isOpen]);
 
   useEffect(() => {
     if (!isOpen) {
@@ -1465,6 +1479,16 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
                   <span className="font-bold block mb-0.5">ℹ️ Cómo escucha de verdad el asistente</span>
                   El motor de voz del navegador siempre escucha el <b>micrófono predeterminado de Windows</b> (limitación del navegador, no de SerchTube).
                   {' '}Este selector solo cambia el dispositivo del <b>vúmetro y las pruebas</b>: para que el asistente use otro micrófono, dejalo como predeterminado en Windows (Configuración → Sistema → Sonido → Entrada).
+                </div>
+              )}
+
+              {speechDiagnostics.lastError && (
+                <div className="p-2.5 rounded-lg bg-red-950/40 border border-red-500/40 text-[11px] text-red-200 animate-fadeIn">
+                  <span className="font-bold block mb-0.5">⚠️ El reconocimiento de voz está fallando</span>
+                  {speechDiagnostics.lastError}
+                  <span className="block mt-1 text-red-300/80 font-mono text-[10px]">
+                    Idioma: {speechDiagnostics.language} · Motor: {speechDiagnostics.browserAvailable ? 'Web Speech' : 'no disponible'} · Escuchando: {speechDiagnostics.listening ? 'sí' : 'no'}
+                  </span>
                 </div>
               )}
 

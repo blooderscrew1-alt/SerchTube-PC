@@ -117,6 +117,84 @@ export interface WakeWordParseResult {
 }
 
 /**
+ * Locales de español que el motor de voz de Microsoft Edge (Azure Speech) reconoce.
+ * La lista es la de Azure Speech-to-Text; si se envía un locale que no está aquí,
+ * Edge responde "language-not-supported" y el micrófono queda sordo.
+ */
+export const SUPPORTED_SPANISH_SPEECH_LOCALES = new Set([
+  'es-ar', 'es-bo', 'es-cl', 'es-co', 'es-cr', 'es-cu', 'es-do', 'es-ec',
+  'es-es', 'es-gq', 'es-gt', 'es-hn', 'es-mx', 'es-ni', 'es-pa', 'es-pe',
+  'es-pr', 'es-py', 'es-sv', 'es-us', 'es-uy', 'es-ve'
+]);
+
+/**
+ * Convierte el idioma del navegador a un locale que el reconocimiento de voz
+ * realmente acepte. En Windows en español es habitual que `navigator.language`
+ * valga sólo "es" o "es-419"; Edge/Azure no acepta esos valores y falla con
+ * "language-not-supported" aunque el micrófono funcione perfectamente.
+ */
+export function resolveSpeechLanguage(rawLanguage?: string | null): string {
+  const raw = String(rawLanguage || '').trim().replace(/_/g, '-');
+  if (!raw) return 'es-MX';
+
+  const lower = raw.toLowerCase();
+  if (lower === 'es' || lower === 'es-419' || lower === 'es-la' || lower === 'es-005') {
+    return 'es-MX';
+  }
+  if (SUPPORTED_SPANISH_SPEECH_LOCALES.has(lower)) {
+    return raw;
+  }
+  if (lower.startsWith('es-')) {
+    // Variante regional no soportada por Edge/Azure: usar la variante mexicana.
+    return 'es-MX';
+  }
+  return raw;
+}
+
+/** Elige el mejor locale disponible, priorizando un español con región soportada. */
+export function pickSpeechLanguage(): string {
+  if (typeof navigator === 'undefined') return 'es-MX';
+
+  const candidates: string[] = [];
+  if (navigator.language) candidates.push(navigator.language);
+  if (Array.isArray(navigator.languages)) {
+    for (const language of navigator.languages) {
+      if (language && !candidates.includes(language)) candidates.push(language);
+    }
+  }
+
+  for (const candidate of candidates) {
+    const resolved = resolveSpeechLanguage(candidate);
+    if (resolved.toLowerCase().startsWith('es-')) {
+      return resolved;
+    }
+  }
+
+  return candidates.length > 0 ? resolveSpeechLanguage(candidates[0]) : 'es-MX';
+}
+
+/** Mensaje entendible para el usuario a partir del código de error de Web Speech. */
+export function describeRecognitionError(error: string): string {
+  switch (String(error || '').toLowerCase()) {
+    case 'not-allowed':
+    case 'service-not-allowed':
+      return 'El navegador bloqueó el micrófono. Revisá el permiso del sitio y que Windows permita acceder al micrófono.';
+    case 'audio-capture':
+      return 'No hay un micrófono activo. Conectá uno, encendelo y ponelo como dispositivo predeterminado en Windows (Sonido → Entrada).';
+    case 'network':
+      return 'El servicio de reconocimiento de voz no respondió. Revisá Internet, el firewall/proxy o probá en Chrome/Brave.';
+    case 'language-not-supported':
+      return 'El idioma de reconocimiento no está disponible en este navegador. Se reintentará con otro dialecto compatible.';
+    case 'no-speech':
+      return 'No se detectó voz.';
+    case 'aborted':
+      return 'El reconocimiento se reinició.';
+    default:
+      return `El reconocimiento de voz falló (${error || 'error desconocido'}).`;
+  }
+}
+
+/**
  * Variantes fonéticas legítimas de la palabra "música" reportadas por motores de voz
  */
 const MUSICA_VARIANTS = new Set([
@@ -329,6 +407,20 @@ export class SpeechService {
   private micRetryAttempts = 0;
   private deviceChangeListenerAttached = false;
 
+  /** Último error real de reconocimiento, para mostrarlo en la interfaz. */
+  private lastRecognitionError = '';
+  /** Locale con el que se está intentando reconocer. */
+  private recognitionLanguage = 'es-MX';
+  /** Fallbacks de idioma ya probados (evita bucles infinitos). */
+  private languageFallbacksTried = new Set<string>();
+  /** Evita varios reinicios simultáneos cuando el navegador corta la sesión. */
+  private recognitionRestartTimer: any = null;
+  private recognitionErrorStreak = 0;
+  /** Errores de permiso/servicio: reintentar solo empeora y tapa el mensaje. */
+  private autoRestartBlocked = false;
+  /** Evita abrir dos veces getUserMedia mientras se comprueba el micrófono. */
+  private micPreflightPromise: Promise<boolean> | null = null;
+
   private constructor() {
     this.initRecognition();
     this.initVoices();
@@ -360,14 +452,24 @@ export class SpeechService {
   }
 
   /**
+   * "default" y "communications" son alias del dispositivo predeterminado de
+   * Chromium, no IDs físicos. Usar `exact` con ellos falla en muchos equipos.
+   */
+  private getPhysicalDeviceId(deviceId?: string): string | null {
+    const chosen = String(deviceId || this.config.audioInputDeviceId || '').trim();
+    if (!chosen || chosen === 'default' || chosen === 'communications') return null;
+    return chosen;
+  }
+
+  /**
    * Solicita explícitamente permisos de micrófono mediante getUserMedia y libera el track
    * de inmediato para que Web Speech API pueda capturar audio sin colisiones de hardware.
    */
   public async enableMicHardwareFocus(deviceId?: string): Promise<boolean> {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return false;
     try {
-      const chosenDevice = deviceId || this.config.audioInputDeviceId;
-      const audioConstraint = (chosenDevice && chosenDevice !== 'default')
+      const chosenDevice = this.getPhysicalDeviceId(deviceId);
+      const audioConstraint = chosenDevice
         ? { deviceId: { exact: chosenDevice } }
         : true;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
@@ -448,17 +550,27 @@ export class SpeechService {
         // cuando el motor la transcribe mal ("musika", "mujica", "mu sica"...)
         this.recognition.maxAlternatives = 5;
 
-        // Dialecto español: priorizar es-MX si el navegador no reporta uno concreto
-        const userLang = (typeof navigator !== 'undefined' && navigator.language && navigator.language.startsWith('es'))
-          ? navigator.language
-          : 'es-MX';
-        this.recognition.lang = userLang;
+        // Edge usa Azure Speech para Web Speech API. Azure no acepta "es" ni
+        // "es-419": hay que enviar siempre una variante regional (es-MX, es-ES...).
+        // Si no se normaliza, el motor responde "language-not-supported" y el
+        // micrófono queda sordo aunque el permiso y el hardware estén bien.
+        this.recognitionLanguage = pickSpeechLanguage();
+        this.recognition.lang = this.recognitionLanguage;
+        this.languageFallbacksTried.clear();
+        this.languageFallbacksTried.add(this.recognitionLanguage.toLowerCase());
 
         this.recognition.onstart = () => {
           this.isListening = true;
           this.finalTail = '';
           this.micRetryAttempts = 0;
+          this.recognitionErrorStreak = 0;
+          this.lastRecognitionError = '';
+          if (this.recognitionRestartTimer) {
+            clearTimeout(this.recognitionRestartTimer);
+            this.recognitionRestartTimer = null;
+          }
           if (this.micRetryTimer) { clearTimeout(this.micRetryTimer); this.micRetryTimer = null; }
+          console.log(`[SpeechService] 🎙️ Reconocimiento activo (idioma: ${this.recognitionLanguage})`);
           if (this.config.wakeWordEnabled === false) {
             this.onStatusChangeCallback?.('listening');
           }
@@ -571,34 +683,51 @@ export class SpeechService {
         };
 
         this.recognition.onerror = (event: any) => {
-          console.warn("[SpeechService] Recognition event error:", event.error);
-          if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+          const code = String(event?.error || 'unknown');
+          this.lastRecognitionError = describeRecognitionError(code);
+          console.warn(`[SpeechService] ❌ Error de reconocimiento (${code}): ${this.lastRecognitionError}`);
+
+          // Edge/Azure rechaza locales sin región ("es", "es-419"). Probar
+          // automáticamente es-MX y es-ES antes de darse por vencido.
+          if (code === 'language-not-supported') {
+            if (this.tryLanguageFallback()) {
+              return;
+            }
+          }
+
+          const fatal = code === 'not-allowed' || code === 'service-not-allowed';
+          const recoverable = code === 'audio-capture' || code === 'network' || code === 'language-not-supported';
+
+          if (fatal) {
+            this.autoRestartBlocked = true;
+          }
+
+          if (fatal || recoverable) {
             this.isListening = false;
             this.onStatusChangeCallback?.('error');
           }
-          if (event.error === 'audio-capture' || event.error === 'service-not-allowed' || event.error === 'not-allowed') {
+
+          if (recoverable) {
             this.scheduleMicRetry();
           }
         };
 
         this.recognition.onend = () => {
           this.isListening = false;
-          // Auto-restart continuo ultra-ágil para que el micrófono esté siempre listo en milisegundos
-          if (this.config.continuousListening && !this.isProcessingCommand && !this.config.satelliteMicOnly) {
-            let attempts = 0;
-            const tryRestart = () => {
-              if (!this.config.continuousListening || this.isListening || this.isProcessingCommand || this.config.satelliteMicOnly) return;
-              attempts++;
-              try {
-                this.recognition.start();
-              } catch (e) {
-                if (attempts < 3) setTimeout(tryRestart, 150 * attempts);
-              }
-            };
-            const waitMs = this.awaitingCommand
-              ? 15
-              : Math.max(30, Math.min(400, this.ttsGuardUntil > Date.now() ? (this.ttsGuardUntil - Date.now() + 20) : 30));
-            setTimeout(tryRestart, waitMs);
+
+          // Si el navegador corta la sesión, reabrir con un pequeño retraso.
+          // No reiniciar en bucle a 30 ms: eso martilla el servicio de voz y
+          // oculta el error real (audio-capture / network / idioma).
+          if (this.autoRestartBlocked) {
+            this.onStatusChangeCallback?.('error');
+            return;
+          }
+          if (
+            (this.config.continuousListening || this.config.wakeWordEnabled === true) &&
+            !this.isProcessingCommand &&
+            !this.config.satelliteMicOnly
+          ) {
+            this.scheduleRecognitionRestart();
           } else if (!this.isProcessingCommand) {
             this.onStatusChangeCallback?.('idle');
           }
@@ -629,6 +758,27 @@ export class SpeechService {
   }
 
   /**
+   * Comprueba el micrófono PREDETERMINADO del sistema, que es el único que
+   * Web Speech API puede usar. No sirve probar el dispositivo elegido en
+   * Ajustes: si el predeterminado de Windows está mal, el reconocimiento falla
+   * aunque el vúmetro de la prueba se mueva.
+   */
+  private async probeDefaultMicrophone(): Promise<boolean> {
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) return false;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const label = stream.getAudioTracks()[0]?.label || 'micrófono predeterminado';
+      stream.getTracks().forEach(track => track.stop());
+      this.micPermissionGranted = true;
+      console.log(`[SpeechService] 🎙️ Micrófono predeterminado disponible: ${label}`);
+      return true;
+    } catch (err: any) {
+      console.warn('[SpeechService] No se pudo abrir el micrófono predeterminado:', err?.name || err, err?.message || '');
+      return false;
+    }
+  }
+
+  /**
    * Explicitly requests microphone hardware permission via getUserMedia.
    * Crucial for browsers which require a user gesture before allowing audio capture.
    */
@@ -639,9 +789,15 @@ export class SpeechService {
     if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
       return { granted: false, error: 'API de micrófono no disponible' };
     }
+    if (this.micPreflightPromise) {
+      const granted = await this.micPreflightPromise;
+      return granted
+        ? { granted: true }
+        : { granted: false, error: 'No se pudo abrir el micrófono' };
+    }
     try {
-      const chosenDevice = deviceId || this.config.audioInputDeviceId;
-      const audioConstraint = (chosenDevice && chosenDevice !== 'default')
+      const chosenDevice = this.getPhysicalDeviceId(deviceId);
+      const audioConstraint = chosenDevice
         ? { deviceId: { exact: chosenDevice } }
         : true;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraint });
@@ -668,13 +824,15 @@ export class SpeechService {
     if (processing) {
       this.resetSession();
     } else {
-      if (this.config.continuousListening && !this.isListening && !this.config.satelliteMicOnly) {
+      if (
+        (this.config.continuousListening || this.config.wakeWordEnabled === true) &&
+        !this.isListening &&
+        !this.config.satelliteMicOnly
+      ) {
         setTimeout(() => {
-          try {
-            if (this.config.continuousListening && !this.isListening && !this.isProcessingCommand) {
-              this.recognition?.start();
-            }
-          } catch (e) {}
+          if (!this.isListening && !this.isProcessingCommand) {
+            this.startListening(true);
+          }
         }, 200);
       }
     }
@@ -712,16 +870,19 @@ export class SpeechService {
     AudioEngine.getInstance().setDuckingEnabled(this.config.duckingEnabled);
     AudioEngine.getInstance().setDuckingVolume(this.config.duckingVolume ?? 0);
 
-    if (newConfig.satelliteMicOnly !== undefined) {
-      if (newConfig.satelliteMicOnly) {
-        this.stopListening();
-      } else if (this.config.continuousListening) {
-        this.startListening();
-      }
-    }
+    // La palabra clave también necesita el micrófono abierto. Antes, activar
+    // "palabra clave" no arrancaba nada si "escucha continua" estaba apagada,
+    // así que decir "música" no hacía absolutamente nada.
+    const shouldListen =
+      !this.config.satelliteMicOnly &&
+      (this.config.continuousListening === true || this.config.wakeWordEnabled === true);
 
-    if (newConfig.continuousListening !== undefined) {
-      if (newConfig.continuousListening && !this.config.satelliteMicOnly) {
+    if (
+      newConfig.satelliteMicOnly !== undefined ||
+      newConfig.continuousListening !== undefined ||
+      newConfig.wakeWordEnabled !== undefined
+    ) {
+      if (shouldListen) {
         this.startListening();
       } else {
         this.stopListening();
@@ -741,12 +902,87 @@ export class SpeechService {
     this.onStatusChangeCallback = onStatusChange;
   }
 
+  public getLastRecognitionError(): string {
+    return this.lastRecognitionError;
+  }
+
+  public getRecognitionLanguage(): string {
+    return this.recognitionLanguage;
+  }
+
+  public getRecognitionDiagnostics() {
+    return {
+      supported: this.isRecognitionSupported,
+      browserAvailable: typeof window !== 'undefined' &&
+        !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition),
+      listening: this.isListening,
+      language: this.recognitionLanguage,
+      lastError: this.lastRecognitionError,
+      continuousListening: this.config.continuousListening === true,
+      wakeWordEnabled: this.config.wakeWordEnabled === true,
+      satelliteMicOnly: this.config.satelliteMicOnly === true
+    };
+  }
+
+  /** Prueba es-MX / es-ES cuando Edge rechaza el locale del navegador. */
+  private tryLanguageFallback(): boolean {
+    const candidates = this.recognitionLanguage.toLowerCase().startsWith('es')
+      ? ['es-MX', 'es-ES']
+      : ['en-US'];
+
+    for (const candidate of candidates) {
+      const key = candidate.toLowerCase();
+      if (this.languageFallbacksTried.has(key)) continue;
+      this.languageFallbacksTried.add(key);
+      this.recognitionLanguage = candidate;
+      if (this.recognition) this.recognition.lang = candidate;
+      this.lastRecognitionError = `El idioma no está disponible; reintentando con ${candidate}.`;
+      console.warn(`[SpeechService] 🔁 Fallback de idioma: ${candidate}`);
+      this.scheduleRecognitionRestart(250);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Reinicia el reconocimiento con retroceso exponencial. El código anterior
+   * lo reiniciaba cada 30 ms, lo que podía dejar el micrófono en un bucle
+   * "escuchando" sin capturar nada y ocultar el error real.
+   */
+  private scheduleRecognitionRestart(customDelayMs?: number) {
+    if (this.recognitionRestartTimer || this.autoRestartBlocked) return;
+    if (!this.config.continuousListening && this.config.wakeWordEnabled !== true) return;
+    if (this.isProcessingCommand || this.config.satelliteMicOnly) return;
+
+    const base = customDelayMs ?? (this.awaitingCommand ? 80 : 300);
+    const backoff = Math.min(5000, base * Math.pow(2, Math.min(3, this.recognitionErrorStreak)));
+    this.recognitionRestartTimer = setTimeout(() => {
+      this.recognitionRestartTimer = null;
+      if (!this.config.continuousListening && this.config.wakeWordEnabled !== true) return;
+      if (this.isListening || this.isProcessingCommand || this.config.satelliteMicOnly) return;
+      this.startListening(true);
+    }, backoff);
+  }
+
+  /** Recrea el objeto de reconocimiento cuando Chromium lo deja en un estado inválido. */
+  private recreateRecognition() {
+    try {
+      this.recognition?.abort();
+    } catch (_) {}
+    this.recognition = null;
+    this.isListening = false;
+    this.initRecognition();
+    if (this.recognition) {
+      this.recognition.lang = this.recognitionLanguage;
+    }
+  }
+
   /**
    * Reintento periódico de arranque del micrófono (para el inicio de Windows,
    * cuando los dispositivos de audio tardan en aparecer).
    */
   private scheduleMicRetry() {
-    if (this.micRetryTimer) return;
+    if (this.micRetryTimer || this.autoRestartBlocked) return;
     this.micRetryAttempts++;
     if (this.micRetryAttempts > 100) {
       console.warn('[SpeechService] ⚠️ Watchdog de micrófono agotado (5 min). Usa devicechange o reinicia la escucha.');
@@ -754,9 +990,12 @@ export class SpeechService {
     }
     this.micRetryTimer = setTimeout(() => {
       this.micRetryTimer = null;
-      if (!this.config.continuousListening || this.isListening || this.isProcessingCommand || this.config.satelliteMicOnly) return;
-      console.log(`[SpeechService] 🔄 Reintento de micrófono #${this.micRetryAttempts}...`);
-      this.startListening();
+      if (
+        (!this.config.continuousListening && this.config.wakeWordEnabled !== true) ||
+        this.isListening || this.isProcessingCommand || this.config.satelliteMicOnly
+      ) return;
+      console.log(`[SpeechService] 🔄 Reintento de micrófono #${this.micRetryAttempts}... (${this.lastRecognitionError || 'sin detalle'})`);
+      this.startListening(true);
     }, 3000);
   }
 
@@ -770,31 +1009,110 @@ export class SpeechService {
     this.deviceChangeListenerAttached = true;
     navigator.mediaDevices.addEventListener('devicechange', () => {
       console.log('[SpeechService] 🔌 Cambio en dispositivos de audio detectado');
-      if (this.config.continuousListening && !this.isListening && !this.isProcessingCommand && !this.config.satelliteMicOnly) {
+      this.micPermissionGranted = false;
+      if (
+        (this.config.continuousListening || this.config.wakeWordEnabled === true) &&
+        !this.isListening && !this.isProcessingCommand && !this.config.satelliteMicOnly
+      ) {
         this.micRetryAttempts = 0;
         this.startListening();
       }
     });
   }
 
-  public startListening() {
+  public startListening(internal = false) {
     if (this.config.satelliteMicOnly) return;
+    if (!internal) {
+      this.autoRestartBlocked = false;
+      this.micRetryAttempts = 0;
+    }
+    if (this.recognitionRestartTimer) {
+      clearTimeout(this.recognitionRestartTimer);
+      this.recognitionRestartTimer = null;
+    }
     if (!this.recognition) {
       this.initRecognition();
     }
-    if (!this.recognition) return;
+    if (!this.recognition) {
+      this.lastRecognitionError = 'Este navegador no tiene reconocimiento de voz (Web Speech API).';
+      this.onStatusChangeCallback?.('error');
+      return;
+    }
     this.ensureDeviceChangeListener();
+
+    // Antes de arrancar Web Speech, abrir y cerrar el micrófono con
+    // getUserMedia. Esto hace dos cosas: concede el permiso (o lo confirma) y
+    // comprueba que exista un dispositivo de entrada real. Sin esta comprobación,
+    // Edge puede responder "audio-capture" y la app quedaba reintentando en vano.
+    if (!this.micPermissionGranted) {
+      if (this.micPreflightPromise) return;
+      this.micPreflightPromise = this.probeDefaultMicrophone()
+        .catch(() => false)
+        .finally(() => { this.micPreflightPromise = null; });
+
+      this.micPreflightPromise.then(granted => {
+        if (!granted) {
+          this.lastRecognitionError = 'No se pudo abrir el micrófono predeterminado de Windows. Elegí un dispositivo de entrada activo como predeterminado en Sonido → Entrada y concedé el permiso al navegador.';
+          this.onStatusChangeCallback?.('error');
+          this.scheduleMicRetry();
+          return;
+        }
+        this.beginRecognition(internal);
+      });
+      return;
+    }
+
+    this.beginRecognition(internal);
+  }
+
+  /** Arranca Web Speech una vez que el micrófono y el permiso están listos. */
+  private beginRecognition(internal: boolean) {
+    if (!this.recognition) return;
+
+    // Aplicar el locale normalizado también en cada arranque. Si quedó un
+    // fallback pendiente, se conserva.
+    this.recognition.lang = this.recognitionLanguage;
+
     try {
       this.config.continuousListening = true;
       this.recognition.start();
-    } catch (e) {
-      // Ignored if already started
+      if (!internal) this.recognitionErrorStreak = 0;
+    } catch (e: any) {
+      const name = String(e?.name || '');
+      console.warn('[SpeechService] No se pudo iniciar el reconocimiento:', name, e?.message || e);
+      if (name === 'InvalidStateError' && this.isListening) {
+        // Ya estaba escuchando: no hay nada que hacer.
+        return;
+      }
+
+      this.recognitionErrorStreak++;
+      this.lastRecognitionError = name === 'InvalidStateError'
+        ? 'El reconocimiento quedó trabado; se está reiniciando.'
+        : (e?.message || 'No se pudo iniciar el reconocimiento de voz.');
+
+      if (name === 'InvalidStateError' || this.recognitionErrorStreak >= 2) {
+        this.recreateRecognition();
+      }
+      this.onStatusChangeCallback?.('error');
+      this.scheduleRecognitionRestart(500);
+      return;
     }
+
     // Verificación post-arranque: si en 4 s no hay sesión activa, programar reintento
-    // (cubre el caso de arranque de la PC donde start() no dispara error visible)
+    // (cubre el caso de arranque de la PC donde start() no dispara error visible).
+    // También recrea el objeto si Chromium quedó en un estado inválido.
     if (!this.micRetryTimer && this.micRetryAttempts === 0) {
       setTimeout(() => {
-        if (this.config.continuousListening && !this.isListening && !this.isProcessingCommand && !this.config.satelliteMicOnly) {
+        if (this.config.satelliteMicOnly || this.isProcessingCommand) return;
+        if (!this.isListening && (this.config.continuousListening || this.config.wakeWordEnabled === true)) {
+          console.warn('[SpeechService] ⚠️ El reconocimiento no arrancó en 4 s; recreando el motor.');
+          this.recognitionErrorStreak++;
+          this.lastRecognitionError = this.lastRecognitionError ||
+            'El micrófono no arrancó. Revisá que haya un dispositivo de entrada predeterminado en Windows.';
+          if (this.recognitionErrorStreak >= 2) {
+            this.recreateRecognition();
+          }
+          this.onStatusChangeCallback?.('error');
           this.scheduleMicRetry();
         }
       }, 4000);
@@ -804,6 +1122,7 @@ export class SpeechService {
   public stopListening() {
     this.config.continuousListening = false;
     if (this.micRetryTimer) { clearTimeout(this.micRetryTimer); this.micRetryTimer = null; }
+    if (this.recognitionRestartTimer) { clearTimeout(this.recognitionRestartTimer); this.recognitionRestartTimer = null; }
     this.releaseMicHardwareFocus();
     if (this.recognition) {
       try {
@@ -813,6 +1132,7 @@ export class SpeechService {
       }
     }
     this.isListening = false;
+    this.recognitionErrorStreak = 0;
     this.onStatusChangeCallback?.('idle');
   }
 
