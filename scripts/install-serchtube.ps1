@@ -41,17 +41,15 @@ try {
 
   Push-Location $Raiz
   try {
-    if (-not (Test-Path -LiteralPath (Join-Path $Raiz 'node_modules'))) {
-      Write-Paso "Instalando dependencias (puede tardar uno o dos minutos)..."
-      & npm install --no-audit --no-fund
-      if ($LASTEXITCODE -ne 0) {
-        Write-Mal "'npm install' termino con error. Revisa la conexion a Internet y volve a intentar."
-        exit 1
-      }
-      Write-Paso "Dependencias instaladas."
-    } else {
-      Write-Paso "node_modules ya existe; no hace falta reinstalar dependencias."
+    # Siempre se ejecuta npm install: un node_modules viejo o incompleto hacia
+    # que el servidor no arrancara y el instalador lo saltaba por existir.
+    Write-Paso "Verificando e instalando dependencias (puede tardar uno o dos minutos)..."
+    & npm install --no-audit --no-fund
+    if ($LASTEXITCODE -ne 0) {
+      Write-Mal "'npm install' termino con error. Revisa la conexion a Internet y volve a intentar."
+      exit 1
     }
+    Write-Paso "Dependencias al dia."
 
     $envFile = Join-Path $Raiz '.env'
     $envExample = Join-Path $Raiz '.env.example'
