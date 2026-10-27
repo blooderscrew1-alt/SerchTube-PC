@@ -27,12 +27,11 @@ rápida y en un solo paso).
 2. (Opcional) copia tu `.env` si quieres las mismas claves; si no, la app restaura las
    claves guardadas en el navegador de ese equipo.
 3. Doble clic en **`Instalar en esta PC.bat`** (`scripts/install-serchtube.ps1`):
-   comprueba Node.js/Git, crea el `.env` si falta, instala dependencias, registra el
-   arranque automático y abre SerchTube.
+   comprueba Node.js/npm, crea el `.env` si falta, instala dependencias, registra el
+   arranque automático y abre SerchTube. No necesita Git.
 
 Después, en esa PC, para actualizar: **`Actualizar SerchTube.bat`**.
-Si falta Node.js o Git, el script lo avisa y puedes dejarlo instalar con
-`-InstalarRequisitos` (usa winget).
+Si falta Node.js, el script lo avisa; instalalo desde https://nodejs.org.
 
 Lo que **no** viaja entre PCs (es lo esperable): `node_modules/`, tus claves
 (`.env`), los registros (`logs/`) y el perfil del navegador (extensiones, ajustes y
