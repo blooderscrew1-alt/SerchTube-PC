@@ -420,6 +420,8 @@ export class SpeechService {
   private autoRestartBlocked = false;
   /** Evita abrir dos veces getUserMedia mientras se comprueba el micrófono. */
   private micPreflightPromise: Promise<boolean> | null = null;
+  /** Entre start() y onstart/onerror/onend no se puede volver a llamar start(). */
+  private recognitionStarting = false;
 
   private constructor() {
     this.initRecognition();
@@ -560,6 +562,7 @@ export class SpeechService {
         this.languageFallbacksTried.add(this.recognitionLanguage.toLowerCase());
 
         this.recognition.onstart = () => {
+          this.recognitionStarting = false;
           this.isListening = true;
           this.finalTail = '';
           this.micRetryAttempts = 0;
@@ -683,6 +686,7 @@ export class SpeechService {
         };
 
         this.recognition.onerror = (event: any) => {
+          this.recognitionStarting = false;
           const code = String(event?.error || 'unknown');
           this.lastRecognitionError = describeRecognitionError(code);
           console.warn(`[SpeechService] ❌ Error de reconocimiento (${code}): ${this.lastRecognitionError}`);
@@ -713,6 +717,7 @@ export class SpeechService {
         };
 
         this.recognition.onend = () => {
+          this.recognitionStarting = false;
           this.isListening = false;
 
           // Si el navegador corta la sesión, reabrir con un pequeño retraso.
@@ -1069,15 +1074,22 @@ export class SpeechService {
   private beginRecognition(internal: boolean) {
     if (!this.recognition) return;
 
+    // No llamar start() dos veces: mientras el navegador está abriendo la
+    // sesión, un segundo start() lanza InvalidStateError y la app parecía
+    // "trabada" aunque el problema real fuera otro (por ejemplo, network).
+    if (this.recognitionStarting || this.isListening) return;
+
     // Aplicar el locale normalizado también en cada arranque. Si quedó un
     // fallback pendiente, se conserva.
     this.recognition.lang = this.recognitionLanguage;
 
     try {
       this.config.continuousListening = true;
+      this.recognitionStarting = true;
       this.recognition.start();
       if (!internal) this.recognitionErrorStreak = 0;
     } catch (e: any) {
+      this.recognitionStarting = false;
       const name = String(e?.name || '');
       console.warn('[SpeechService] No se pudo iniciar el reconocimiento:', name, e?.message || e);
       if (name === 'InvalidStateError' && this.isListening) {
@@ -1106,6 +1118,7 @@ export class SpeechService {
         if (this.config.satelliteMicOnly || this.isProcessingCommand) return;
         if (!this.isListening && (this.config.continuousListening || this.config.wakeWordEnabled === true)) {
           console.warn('[SpeechService] ⚠️ El reconocimiento no arrancó en 4 s; recreando el motor.');
+          this.recognitionStarting = false;
           this.recognitionErrorStreak++;
           this.lastRecognitionError = this.lastRecognitionError ||
             'El micrófono no arrancó. Revisá que haya un dispositivo de entrada predeterminado en Windows.';
