@@ -422,6 +422,9 @@ export class SpeechService {
   private micPreflightPromise: Promise<boolean> | null = null;
   /** Entre start() y onstart/onerror/onend no se puede volver a llamar start(). */
   private recognitionStarting = false;
+  /** Perfiles alternativos para cuando Edge devuelve "network" con la configuración normal. */
+  private compatibilityProfileIndex = -1;
+  private compatibilityMode = false;
 
   private constructor() {
     this.initRecognition();
@@ -699,6 +702,21 @@ export class SpeechService {
             }
           }
 
+          // "network" también puede deberse a una combinación de opciones que
+          // esa versión de Edge no acepta (continuous/maxAlternatives/locale).
+          // Probar perfiles conservadores antes de mostrar el error final.
+          if (code === 'network') {
+            if (this.applyCompatibilityFallback()) {
+              return;
+            }
+            this.autoRestartBlocked = true;
+            this.isListening = false;
+            this.lastRecognitionError =
+              'El servicio de voz de este navegador no respondió con ninguna configuración. Probá abrir SerchTube en Chrome o Brave, o actualizá Edge.';
+            this.onStatusChangeCallback?.('error');
+            return;
+          }
+
           const fatal = code === 'not-allowed' || code === 'service-not-allowed';
           const recoverable = code === 'audio-capture' || code === 'network' || code === 'language-not-supported';
 
@@ -925,8 +943,44 @@ export class SpeechService {
       lastError: this.lastRecognitionError,
       continuousListening: this.config.continuousListening === true,
       wakeWordEnabled: this.config.wakeWordEnabled === true,
-      satelliteMicOnly: this.config.satelliteMicOnly === true
+      satelliteMicOnly: this.config.satelliteMicOnly === true,
+      compatibilityMode: this.compatibilityMode
     };
+  }
+
+  /**
+   * Algunas versiones de Edge devuelven "network" con la configuración normal
+   * (continuous + varias alternativas) aunque el servicio de voz funcione en
+   * otras páginas. Probamos perfiles más conservadores antes de rendirnos.
+   */
+  private applyCompatibilityFallback(): boolean {
+    const profiles = [
+      { lang: 'es-MX', continuous: false, interimResults: false, maxAlternatives: 1 },
+      { lang: 'es-MX', continuous: false, interimResults: true, maxAlternatives: 1 },
+      { lang: 'es-ES', continuous: false, interimResults: false, maxAlternatives: 1 },
+      { lang: 'en-US', continuous: false, interimResults: false, maxAlternatives: 1 }
+    ];
+
+    const next = this.compatibilityProfileIndex + 1;
+    if (next >= profiles.length) return false;
+
+    const profile = profiles[next];
+    this.compatibilityProfileIndex = next;
+    this.compatibilityMode = true;
+    this.recognitionLanguage = profile.lang;
+
+    this.recreateRecognition();
+    if (!this.recognition) return false;
+    this.recognition.lang = profile.lang;
+    this.recognition.continuous = profile.continuous;
+    this.recognition.interimResults = profile.interimResults;
+    this.recognition.maxAlternatives = profile.maxAlternatives;
+
+    this.lastRecognitionError =
+      `Reintentando en modo compatible (${profile.lang}, continuo: ${profile.continuous ? 'sí' : 'no'}, alternativas: ${profile.maxAlternatives})...`;
+    console.warn(`[SpeechService] 🧪 ${this.lastRecognitionError}`);
+    this.scheduleRecognitionRestart(600);
+    return true;
   }
 
   /** Prueba es-MX / es-ES cuando Edge rechaza el locale del navegador. */
@@ -1030,6 +1084,18 @@ export class SpeechService {
     if (!internal) {
       this.autoRestartBlocked = false;
       this.micRetryAttempts = 0;
+      // Un intento manual vuelve a probar la configuración normal.
+      if (this.compatibilityMode) {
+        this.compatibilityMode = false;
+        this.compatibilityProfileIndex = -1;
+        this.recognitionLanguage = pickSpeechLanguage();
+        if (this.recognition) {
+          this.recognition.lang = this.recognitionLanguage;
+          this.recognition.continuous = true;
+          this.recognition.interimResults = true;
+          this.recognition.maxAlternatives = 5;
+        }
+      }
     }
     if (this.recognitionRestartTimer) {
       clearTimeout(this.recognitionRestartTimer);

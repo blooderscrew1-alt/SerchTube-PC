@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SerchTube — Diagnóstico de voz</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; padding: 24px; background: #08080a; color: #e5e7eb; font-family: system-ui, sans-serif; }
+    h1 { font-size: 22px; margin: 0 0 6px; }
+    p { color: #9ca3af; font-size: 14px; line-height: 1.45; }
+    .grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; }
+    button { background: #dc2626; color: white; border: 0; border-radius: 10px; padding: 12px 16px; font-weight: 700; cursor: pointer; }
+    button.secondary { background: #1f2937; }
+    button:disabled { opacity: .45; cursor: wait; }
+    pre { background: #111318; border: 1px solid #2a2d35; border-radius: 12px; padding: 16px; min-height: 220px; white-space: pre-wrap; font-size: 13px; }
+    .hint { color: #fbbf24; }
+  </style>
+</head>
+<body>
+  <h1>Diagnóstico de voz de SerchTube</h1>
+  <p>Abrí esta página en la PC host con <b>http://localhost:3000/diagnostico-voz.html</b>. Elegí un perfil, hablá claro durante 5 segundos y mirá el resultado.</p>
+  <p class="hint">Este diagnóstico usa el micrófono predeterminado de Windows, igual que el asistente. No cambia ninguna configuración.</p>
+
+  <div class="grid">
+    <button data-lang="es-MX" data-continuous="false" data-interim="false">Probar es-MX seguro</button>
+    <button data-lang="es-MX" data-continuous="true" data-interim="true">Probar es-MX continuo</button>
+    <button data-lang="es-ES" data-continuous="false" data-interim="false">Probar es-ES</button>
+    <button data-lang="en-US" data-continuous="false" data-interim="false">Probar en-US</button>
+    <button class="secondary" id="mic">Probar micrófono predeterminado</button>
+    <button class="secondary" id="clear">Limpiar</button>
+  </div>
+
+  <pre id="log">Listo. Elegí un perfil y hablá cuando diga "ESCUCHANDO".</pre>
+
+  <script>
+    const logEl = document.getElementById('log');
+    const buttons = [...document.querySelectorAll('button[data-lang]')];
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+    function write(line) {
+      const time = new Date().toLocaleTimeString();
+      logEl.textContent += `\n[${time}] ${line}`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function resetLog() { logEl.textContent = 'Listo. Elegí un perfil y hablá cuando diga "ESCUCHANDO".'; }
+
+    document.getElementById('clear').onclick = resetLog;
+
+    document.getElementById('mic').onclick = async () => {
+      write('Probando getUserMedia({audio:true})...');
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const track = stream.getAudioTracks()[0];
+        write(`OK: ${track?.label || 'micrófono predeterminado'} (${track?.readyState || '?'})`);
+        stream.getTracks().forEach(t => t.stop());
+      } catch (e) {
+        write(`ERROR: ${e.name}: ${e.message}`);
+      }
+    };
+
+    if (!SR) {
+      write('ERROR: este navegador no tiene SpeechRecognition/webkitSpeechRecognition.');
+    }
+
+    for (const button of buttons) {
+      button.onclick = () => {
+        if (!SR) return;
+        const lang = button.dataset.lang;
+        const continuous = button.dataset.continuous === 'true';
+        const interimResults = button.dataset.interim === 'true';
+
+        buttons.forEach(b => b.disabled = true);
+        logEl.textContent = '';
+        write(`Probando: lang=${lang} continuous=${continuous} interimResults=${interimResults} maxAlternatives=1`);
+        write(`navigator.language=${navigator.language} / languages=${JSON.stringify(navigator.languages)}`);
+        write('ESCUCHANDO... hablá ahora.');
+
+        const recognition = new SR();
+        recognition.lang = lang;
+        recognition.continuous = continuous;
+        recognition.interimResults = interimResults;
+        recognition.maxAlternatives = 1;
+        let gotResult = false;
+
+        recognition.onstart = () => write('onstart');
+        recognition.onaudiostart = () => write('onaudiostart');
+        recognition.onspeechstart = () => write('onspeechstart');
+        recognition.onresult = event => {
+          gotResult = true;
+          const transcript = event.results?.[0]?.[0]?.transcript || '';
+          write(`RESULTADO: "${transcript}" (final=${event.results?.[0]?.isFinal})`);
+        };
+        recognition.onerror = event => write(`ERROR: ${event.error} ${event.message || ''}`);
+        recognition.onend = () => {
+          write('onend');
+          buttons.forEach(b => b.disabled = false);
+          if (!gotResult) write('No hubo transcripción. Si onerror fue "network", el servicio de voz de este navegador no responde para este perfil.');
+        };
+
+        try {
+          recognition.start();
+        } catch (e) {
+          write(`EXCEPCIÓN al iniciar: ${e.name}: ${e.message}`);
+          buttons.forEach(b => b.disabled = false);
+          return;
+        }
+
+        setTimeout(() => {
+          try { recognition.stop(); } catch (_) {}
+        }, 7000);
+        setTimeout(() => {
+          buttons.forEach(b => b.disabled = false);
+        }, 8500);
+      };
+    }
+  </script>
+</body>
+</html>

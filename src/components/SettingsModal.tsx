@@ -1487,8 +1487,16 @@ const SettingsModalComponent: React.FC<SettingsModalProps> = ({
                   <span className="font-bold block mb-0.5">⚠️ El reconocimiento de voz está fallando</span>
                   {speechDiagnostics.lastError}
                   <span className="block mt-1 text-red-300/80 font-mono text-[10px]">
-                    Idioma: {speechDiagnostics.language} · Motor: {speechDiagnostics.browserAvailable ? 'Web Speech' : 'no disponible'} · Escuchando: {speechDiagnostics.listening ? 'sí' : 'no'}
+                    Idioma: {speechDiagnostics.language} · Motor: {speechDiagnostics.browserAvailable ? 'Web Speech' : 'no disponible'} · Escuchando: {speechDiagnostics.listening ? 'sí' : 'no'}{speechDiagnostics.compatibilityMode ? ' · Modo compatible' : ''}
                   </span>
+                  <a
+                    href="/diagnostico-voz.html"
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-block mt-1.5 text-[11px] font-bold text-red-300 underline hover:text-white"
+                  >
+                    Abrir diagnóstico de voz
+                  </a>
                 </div>
               )}
 
