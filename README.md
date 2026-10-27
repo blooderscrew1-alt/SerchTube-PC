@@ -146,7 +146,10 @@ Qué hace ([scripts/update-serchtube.ps1](scripts/update-serchtube.ps1)):
    `package-lock.json` / `bun.lock` o si falta `node_modules`. Si no, no pierde tiempo.
 3. **Reinicia el servidor** (detecta el que escucha en el puerto) para que tome el
    código nuevo; si estaba apagado, lo arranca.
-4. Muestra un resumen: versión anterior → nueva, dependencias y estado del servidor.
+4. **Cierra la ventana vieja de SerchTube y abre una nueva** con el código
+   actualizado. Antes solo se recargaba el servidor, pero la ventana abierta podía
+   seguir ejecutando el JavaScript viejo y parecía que la actualización no se aplicó.
+5. Muestra un resumen: versión anterior → nueva, dependencias y estado del servidor.
 
 No toca tus claves (`.env`), tus registros (`logs/`) ni `node_modules/`.
 
@@ -188,7 +191,13 @@ El lanzador ([scripts/start-serchtube.ps1](scripts/start-serchtube.ps1)):
 4. Si la ventana de la app ya está abierta, la trae al frente y **no abre otra**,
    así que puedes ejecutarlo cuantas veces quieras (arranque de Windows, doble
    clic, script propio).
-5. Registra SerchTube en el **autoinicio de Windows** la primera vez que lo
+5. En el **arranque automático de Windows** cierra todas las ventanas del
+   navegador elegido (Edge por defecto), aunque hayan quedado restauradas de la
+   sesión anterior, y abre **una sola ventana de SerchTube**. Esto evita que dos
+   ventanas abran `SpeechRecognition` a la vez y una cancele a la otra (`aborted`).
+   En un arranque manual solo se cierran las ventanas cuyo título contiene
+   "SerchTube"; para forzar el modo estricto a mano: `-SoloUnaVentanaEdge`.
+6. Registra SerchTube en el **autoinicio de Windows** la primera vez que lo
    ejecutas (una sola vez; después no toca nada más).
 
 ## Arranque automático al encender la PC

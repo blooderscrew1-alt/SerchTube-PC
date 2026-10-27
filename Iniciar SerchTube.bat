@@ -12,6 +12,7 @@ rem  perfil (si falta, el navegador pregunta una sola vez).
 rem
 rem  Opciones: -Modo pestana | -SinNavegador | -SinAutoInicio | -QuitarAutoInicio
 rem            -SinPermisoMicro | -Navegador chrome | -Perfil dedicado
+rem            -SoloUnaVentanaEdge (cierra todas las ventanas del navegador)
 rem ============================================================================
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\start-serchtube.ps1" %*
 if errorlevel 1 (

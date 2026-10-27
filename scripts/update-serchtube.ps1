@@ -634,4 +634,8 @@ if ($stasheado) {
   Write-Host "   Para recuperarlos:  git stash pop" -ForegroundColor Yellow
 }
 Write-Host "=========================================" -ForegroundColor Green
-if ($cambiado) { Write-Host "`n  Recarga la ventana de SerchTube (F5) para ver los cambios.`n" -ForegroundColor Yellow }
+if ($cambiado -and -not $SinReiniciar) {
+  Write-Host "`n  La ventana vieja de SerchTube se cierra y se abre una nueva automáticamente.`n" -ForegroundColor Yellow
+} elseif ($cambiado) {
+  Write-Host "`n  Recarga la ventana de SerchTube (F5) para ver los cambios.`n" -ForegroundColor Yellow
+}

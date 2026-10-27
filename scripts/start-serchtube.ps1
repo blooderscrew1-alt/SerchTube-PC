@@ -75,6 +75,11 @@ param(
   [switch]$SinAutoInicio,
   [switch]$QuitarAutoInicio,
 
+  # Cerrar TODAS las ventanas del navegador elegido antes de abrir SerchTube.
+  # Se activa solo en el arranque automatico de Windows para dejar una única
+  # ventana limpia; en un arranque manual solo se cierran las de SerchTube.
+  [switch]$SoloUnaVentanaEdge,
+
   # Solo registra el autoinicio de Windows y sale (lo usa el interruptor
   # "Iniciar con Windows" de los Ajustes de la app via /api/system/auto-start)
   [switch]$SoloRegistrarAutoInicio,
@@ -98,6 +103,9 @@ $TituloVentana = 'SerchTube Music'
 $VbsSilencioso = Join-Path $PSScriptRoot 'start-serchtube-silencioso.vbs'
 $ClaveRun = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 if ($PerfilNormal) { $Perfil = 'normal' }
+# En el arranque de Windows se deja una sola ventana del navegador, sin importar
+# cuántas pestañas haya restaurado Edge de la sesión anterior.
+if ($AutoInicio) { $SoloUnaVentanaEdge = $true }
 $UsarPerfilDedicado = ($Perfil -eq 'dedicado')
 # Perfil que se usa de verdad (solo en modo dedicado; cada navegador el suyo)
 $PerfilReal = $PerfilEdge
@@ -246,6 +254,60 @@ function BuscarVentanaPorTitulo([int[]]$Pids) {
   }
   [void][SerchTube.Ventanas]::EnumWindows($cb, [IntPtr]::Zero)
   return $script:hwndApp
+}
+
+function Get-PidsNavegador($Nav) {
+  if (-not $Nav) {
+    return @(Get-Process msedge, chrome, brave -ErrorAction SilentlyContinue |
+      ForEach-Object { [int]$_.Id })
+  }
+  $nombre = [IO.Path]::GetFileNameWithoutExtension($Nav.Exe)
+  return @(Get-Process -Name $nombre -ErrorAction SilentlyContinue |
+    ForEach-Object { [int]$_.Id })
+}
+
+function Get-VentanasNavegador {
+  # Ventanas visibles del navegador. Si se indica TituloComo, solo las que
+  # contienen ese texto (p. ej. "SerchTube"); si no, todas.
+  param([int[]]$Pids, [string]$TituloComo = '')
+  if (-not $Pids -or $Pids.Count -eq 0) { return @() }
+  Initialize-Ventanas
+  $script:ventanasNavegador = @()
+  $cb = [SerchTube.Ventanas+EnumWindowsProc] {
+    param($h, $l)
+    $pidVentana = [uint32]0
+    [void][SerchTube.Ventanas]::GetWindowThreadProcessId($h, [ref]$pidVentana)
+    if (($Pids -contains [int]$pidVentana) -and [SerchTube.Ventanas]::IsWindowVisible($h)) {
+      $sb = New-Object System.Text.StringBuilder 512
+      [void][SerchTube.Ventanas]::GetWindowTextW($h, $sb, 512)
+      $titulo = $sb.ToString().Trim()
+      if ($titulo -and (-not $TituloComo -or $titulo -like "*$TituloComo*")) {
+        $script:ventanasNavegador += [PSCustomObject]@{
+          Handle = $h
+          Pid = [int]$pidVentana
+          Title = $titulo
+        }
+      }
+    }
+    return $true
+  }
+  [void][SerchTube.Ventanas]::EnumWindows($cb, [IntPtr]::Zero)
+  return @($script:ventanasNavegador)
+}
+
+function Close-VentanasNavegador {
+  # Cierra ventanas con WM_CLOSE (no mata el proceso: así el navegador guarda
+  # sus preferencias y no se pierden otras ventanas que no correspondan).
+  param([int[]]$Pids, [string]$TituloComo = '')
+  $ventanas = @(Get-VentanasNavegador -Pids $Pids -TituloComo $TituloComo)
+  if ($ventanas.Count -eq 0) { return 0 }
+  Initialize-Ventanas
+  foreach ($v in $ventanas) {
+    Write-Paso "Cerrando ventana duplicada: $($v.Title)"
+    [void][SerchTube.Ventanas]::PostMessage($v.Handle, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)  # WM_CLOSE
+  }
+  Start-Sleep -Seconds 2
+  return $ventanas.Count
 }
 
 function Get-VentanasSerchTube {
@@ -689,6 +751,31 @@ try {
     # Cada navegador tiene su propio directorio de datos (no se pueden mezclar)
     $PerfilReal = "$PerfilEdge-$($nav.Nombre)"
   }
+
+  # --------------------------------------------------- 6.2) Ventanas duplicadas
+  # En el arranque de Windows, Edge puede restaurar varias pestañas/ventanas de
+  # SerchTube. Cada una abre su propio SpeechRecognition y una cancela a la otra
+  # ("aborted"). Se cierran antes de abrir la única ventana de la app.
+  $pidsNavegador = @(Get-PidsNavegador $nav)
+  if ($pidsNavegador.Count -gt 0) {
+    if ($SoloUnaVentanaEdge) {
+      $cerradas = Close-VentanasNavegador -Pids $pidsNavegador
+      if ($cerradas -gt 0) {
+        Write-Paso "Se cerraron $cerradas ventana(s) de $($nav.Nombre) para dejar una sola."
+        # Si alguna no se cerró con WM_CLOSE, forzar el proceso del navegador.
+        foreach ($p in $pidsNavegador) {
+          Stop-Process -Id $p -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Seconds 1
+      }
+    } else {
+      $cerradas = Close-VentanasNavegador -Pids $pidsNavegador -TituloComo 'SerchTube'
+      if ($cerradas -gt 0) {
+        Write-Paso "Se cerraron $cerradas ventana(s) vieja(s) de SerchTube."
+      }
+    }
+  }
+
   Write-Paso "Navegador: $($nav.Nombre)  ($($nav.Exe))"
   if ($UsarPerfilDedicado) {
     Write-Paso "Perfil dedicado (sin extensiones ni datos previos): $PerfilReal"
