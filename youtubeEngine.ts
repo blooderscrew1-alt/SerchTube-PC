@@ -997,6 +997,549 @@ export async function scrapeYouTubePlaylist(playlistId: string): Promise<Catalog
 }
 
 /**
+ * Clave canónica de una canción para deduplicar de forma agresiva pero segura:
+ * ignora canal, "official video/audio", "letra", remaster, en vivo, etc.
+ * "Eminem - Without Me (Official Video)" y "Without Me (Lyrics)" dan la misma clave.
+ */
+export function canonicalSongKey(title: string | undefined | null): string {
+  if (!title) return '';
+  const songPart = extractSongPart(title) || cleanTitleForComparison(title);
+  return (songPart || '')
+    .replace(/\b(?:official|oficial|video|audio|lyric|lyrics|letra|letras|remaster|remastered|remasterizado|version|versi[oó]n|deluxe|expanded|edition|explicit|clean|hd|4k|topic|vevo|music|musica|m[uú]sica)\b/gi, ' ')
+    .replace(/[^a-z0-9]/g, '')
+    .trim();
+}
+
+/** Deduplica una lista de pistas por canción canónica, conservando el primer orden. */
+export function dedupeCatalogTracks(tracks: CatalogTrack[]): CatalogTrack[] {
+  const result: CatalogTrack[] = [];
+  const seenIds = new Set<string>();
+  const seenKeys = new Set<string>();
+
+  for (const track of tracks || []) {
+    if (!track || !track.id || seenIds.has(track.id)) continue;
+    const key = canonicalSongKey(track.title);
+    if (key && seenKeys.has(key)) continue;
+    seenIds.add(track.id);
+    if (key) seenKeys.add(key);
+    result.push(track);
+  }
+
+  return result;
+}
+
+/**
+ * Detecta la orden "álbum completo" / "full album" y devuelve la consulta limpia.
+ * Ej: "reproduce eminem slim shady album completo" -> { isAlbum:true, query:"eminem slim shady" }
+ */
+export function extractAlbumCommand(raw: string): { isAlbum: boolean; query: string } {
+  const original = (raw || '').trim();
+  const isAlbum =
+    /(?:album|álbum|disco)\s+(?:completo|completa|entero|entera)/i.test(original) ||
+    /\bfull\s+album\b/i.test(original) ||
+    /\b(?:todo|toda)\s+el\s+(?:album|álbum|disco)\b/i.test(original);
+
+  if (!isAlbum) return { isAlbum: false, query: original };
+
+  let query = original
+    .replace(/\b(?:reproduce|reproducir|reprod[uú]ceme|pon|ponme|ponte|escuchar|escucha|quiero\s+escuchar|toca|tocar|play|busca|buscar)\b/gi, ' ')
+    .replace(/(?:album|álbum|disco)\s+(?:completo|completa|entero|entera)/gi, ' ')
+    .replace(/\bfull\s+album\b/gi, ' ')
+    .replace(/\b(?:todo|toda)\s+el\s+(?:album|álbum|disco)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  query = query.replace(/^(?:de|del|el|la|los|las)\s+/i, '').trim();
+  query = query.replace(/^(?:de|del)\s+/i, '').trim();
+  return { isAlbum: true, query: query || original };
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+ * Resolución de álbumes (Deezer + YouTube)
+ * ────────────────────────────────────────────────────────────────────────── */
+
+export interface AlbumTrackInfo {
+  title: string;
+  artist: string;
+  duration: string;
+}
+
+export interface AlbumInfo {
+  id: string;
+  title: string;
+  artist: string;
+  cover?: string;
+  tracks: AlbumTrackInfo[];
+  /** Canción que mejor coincide con lo pedido, si la consulta era una canción. */
+  requestedTrack?: AlbumTrackInfo;
+  source: string;
+}
+
+const albumInfoCache = new Map<string, { at: number; data: AlbumInfo | null }>();
+const ALBUM_CACHE_TTL_MS = 60 * 60 * 1000;
+
+async function fetchJsonWithTimeout(url: string, timeoutMs: number = 5000): Promise<any | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        'User-Agent': YOUTUBE_USER_AGENT,
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+      }
+    });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function tokenSet(value: string): Set<string> {
+  return new Set(
+    normalizeText(value)
+      .split(' ')
+      .filter(token => token.length > 1)
+  );
+}
+
+function tokenOverlap(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 || b.size === 0) return 0;
+  let hits = 0;
+  for (const token of a) {
+    if (b.has(token)) hits++;
+  }
+  return hits;
+}
+
+/**
+ * Resuelve un álbum real a partir de una consulta ("artista canción" o
+ * "artista álbum") usando la API pública de Deezer. Devuelve la lista de
+ * pistas en orden de álbum.
+ */
+export async function resolveAlbumInfo(rawQuery: string): Promise<AlbumInfo | null> {
+  const query = (rawQuery || '').trim();
+  if (!query) return null;
+
+  const cached = albumInfoCache.get(query.toLowerCase());
+  if (cached && Date.now() - cached.at < ALBUM_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const searchUrl = `https://api.deezer.com/search?q=${encodeURIComponent(query)}&limit=12`;
+  const searchData = await fetchJsonWithTimeout(searchUrl, 5000);
+  const results: any[] = Array.isArray(searchData?.data) ? searchData.data : [];
+  if (results.length === 0) {
+    albumInfoCache.set(query.toLowerCase(), { at: Date.now(), data: null });
+    return null;
+  }
+
+  const groups = new Map<number, { album: any; tracks: any[]; score: number }>();
+  for (const item of results) {
+    const albumId = Number(item?.album?.id);
+    if (!albumId) continue;
+    const existing = groups.get(albumId) || { album: item.album, tracks: [], score: 0 };
+    existing.tracks.push(item);
+    groups.set(albumId, existing);
+  }
+  if (groups.size === 0) return null;
+
+  const queryTokens = tokenSet(query);
+  for (const group of groups.values()) {
+    const albumTitle = String(group.album?.title || '');
+    const artistName = String(group.tracks[0]?.artist?.name || '');
+    const albumTokens = tokenSet(albumTitle);
+    const artistTokens = tokenSet(artistName);
+
+    let score = group.tracks.length * 12;
+    score += tokenOverlap(albumTokens, queryTokens) * 30;
+    score += tokenOverlap(artistTokens, queryTokens) * 18;
+
+    // El artista de la consulta debe existir en alguna pista del grupo. Si no,
+    // se descarta prácticamente (evita resultados homónimos de otro artista).
+    const artistMatched = group.tracks.some(track => {
+      const tokens = tokenSet(String(track?.artist?.name || ''));
+      return tokenOverlap(tokens, queryTokens) > 0;
+    });
+    if (artistMatched) score += 40;
+    else score -= 160;
+
+    if (/\b(?:greatest|hits|best\s+of|exitos|éxitos|live|en\s+vivo|karaoke|cover|tribute|tributo|remix|compilation|recopilaci[oó]n)\b/i.test(albumTitle)) {
+      score -= 30;
+    }
+    const trackCount = Number(group.album?.nb_tracks || 0);
+    if (trackCount >= 5 && trackCount <= 30) score += 12;
+    if (trackCount > 40) score -= 25;
+
+    group.score = score;
+  }
+
+  const best = [...groups.values()].sort((a, b) => b.score - a.score)[0];
+  const albumId = String(best.album?.id || '');
+  if (!albumId) return null;
+
+  const albumData = await fetchJsonWithTimeout(`https://api.deezer.com/album/${albumId}`, 6000);
+  if (!albumData) return null;
+
+  const rawTracks: any[] = Array.isArray(albumData?.tracks?.data) ? albumData.tracks.data : [];
+  if (rawTracks.length === 0) return null;
+
+  const tracks: AlbumTrackInfo[] = rawTracks
+    .map((track: any) => ({
+      title: String(track?.title || '').trim(),
+      artist: String(track?.artist?.name || albumData?.artist?.name || '').trim(),
+      duration: secondsToDuration(Number(track?.duration))
+    }))
+    .filter(track => !!track.title);
+
+  if (tracks.length === 0) return null;
+
+  // Canción que mejor coincide con la consulta, solo si pertenece al álbum elegido.
+  const topResult = results[0];
+  const queryKey = normalizeText(query);
+  const topResultBelongsToAlbum = Number(topResult?.album?.id) === Number(albumId);
+
+  let requestedTrack: any = null;
+  if (topResultBelongsToAlbum) {
+    requestedTrack = topResult;
+  } else {
+    // Si la consulta era una canción, elegir la pista del álbum con más palabras en común.
+    let bestOverlap = 0;
+    let bestTrack: any = null;
+    const queryTokens = tokenSet(queryKey);
+    for (const track of best.tracks) {
+      const trackTokens = tokenSet(String(track?.title || ''));
+      const overlap = tokenOverlap(trackTokens, queryTokens);
+      const coverage = trackTokens.size > 0 ? overlap / trackTokens.size : 0;
+      if (coverage > bestOverlap) {
+        bestOverlap = coverage;
+        bestTrack = track;
+      }
+    }
+    if (bestTrack && bestOverlap >= 0.6) requestedTrack = bestTrack;
+  }
+
+  const info: AlbumInfo = {
+    id: albumId,
+    title: String(albumData?.title || best.album?.title || '').trim(),
+    artist: String(albumData?.artist?.name || best.tracks[0]?.artist?.name || '').trim(),
+    cover: String(albumData?.cover_medium || albumData?.cover || '').trim(),
+    tracks,
+    requestedTrack: requestedTrack
+      ? {
+          title: String(requestedTrack.title || '').trim(),
+          artist: String(requestedTrack.artist?.name || albumData?.artist?.name || '').trim(),
+          duration: secondsToDuration(Number(requestedTrack.duration))
+        }
+      : undefined,
+    source: 'deezer'
+  };
+
+  albumInfoCache.set(query.toLowerCase(), { at: Date.now(), data: info });
+  if (albumInfoCache.size > 200) {
+    const oldest = albumInfoCache.keys().next().value;
+    if (oldest) albumInfoCache.delete(oldest);
+  }
+  return info;
+}
+
+interface PlaylistCandidate {
+  id: string;
+  title: string;
+}
+
+/** Busca playlists de YouTube (filtro de playlists) con título e id. */
+export async function searchYouTubePlaylists(query: string, maxResults: number = 8): Promise<PlaylistCandidate[]> {
+  try {
+    const searchUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&sp=EgIQAw%253D%253D`;
+    const response = await fetch(searchUrl, {
+      headers: {
+        'User-Agent': YOUTUBE_USER_AGENT,
+        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8'
+      }
+    });
+    if (!response.ok) return [];
+    const html = await response.text();
+    const match =
+      html.match(/var ytInitialData\s*=\s*({.+?});<\/script>/s) ||
+      html.match(/ytInitialData\s*=\s*({.+?});/s);
+    if (!match) return [];
+
+    const data = JSON.parse(match[1]);
+    const items =
+      data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents?.[0]
+        ?.itemSectionRenderer?.contents;
+
+    const playlists: PlaylistCandidate[] = [];
+    const seen = new Set<string>();
+    if (!Array.isArray(items)) return [];
+
+    for (const item of items) {
+      const vm = item?.lockupViewModel;
+      if (vm) {
+        const title = String(vm.metadata?.lockupMetadataViewModel?.title?.content || '').trim();
+        const playlistId =
+          vm.rendererContext?.commandContext?.onTap?.innertubeCommand?.watchEndpoint?.playlistId ||
+          vm.rendererContext?.commandContext?.onTap?.innertubeCommand?.browseEndpoint?.browseId;
+        if (playlistId && title && !seen.has(playlistId)) {
+          seen.add(playlistId);
+          playlists.push({ id: playlistId, title });
+        }
+      }
+      const pr = item?.playlistRenderer;
+      if (pr?.playlistId && !seen.has(pr.playlistId)) {
+        const title =
+          pr.title?.simpleText ||
+          (Array.isArray(pr.title?.runs) ? pr.title.runs.map((run: any) => run?.text || '').join('') : '');
+        if (title) {
+          seen.add(pr.playlistId);
+          playlists.push({ id: pr.playlistId, title: String(title).trim() });
+        }
+      }
+      if (playlists.length >= maxResults) break;
+    }
+    return playlists;
+  } catch {
+    return [];
+  }
+}
+
+function scoreAlbumPlaylistCandidate(title: string, album: AlbumInfo): number {
+  const titleKey = normalizeText(title);
+  const albumKey = normalizeText(album.title);
+  const artistKey = normalizeText(album.artist);
+
+  let score = 0;
+  if (titleKey.includes(albumKey)) score += 120;
+  score += tokenOverlap(tokenSet(title), tokenSet(album.title)) * 25;
+  if (titleKey.includes(artistKey)) score += 45;
+
+  if (/\b(?:full\s+album|album\s+completo|disco\s+completo)\b/i.test(title)) score += 20;
+  if (/\b(?:cover|karaoke|tribute|tributo|reaction|reacci[oó]n|instrumental|remix|greatest|hits|best\s+of|exitos|éxitos|live|en\s+vivo|mix)\b/i.test(title)) {
+    score -= 90;
+  }
+  return score;
+}
+
+/** Busca una pista concreta del álbum en YouTube y la devuelve normalizada. */
+async function searchAlbumTrackVideo(album: AlbumInfo, albumTrack: AlbumTrackInfo): Promise<CatalogTrack | null> {
+  const albumKey = canonicalSongKey(albumTrack.title);
+  if (!albumKey) return null;
+
+  // En álbumes compartidos ("Mano a Mano") cada pista tiene su propio artista.
+  const trackArtist = albumTrack.artist || album.artist;
+  let videos = await scrapeYouTubeVideos(`${trackArtist} ${albumTrack.title} official audio`, 5);
+  if (videos.length === 0) {
+    // YouTube a veces corta la primera petición (redirect/HTTP2): un reintento simple.
+    await new Promise(resolve => setTimeout(resolve, 350));
+    videos = await scrapeYouTubeVideos(`${trackArtist} ${albumTrack.title}`, 5);
+  }
+  const match = videos.find(video => {
+    const key = canonicalSongKey(video.title);
+    return !!key && (key === albumKey || (key.length > 4 && albumKey.length > 4 && (key.includes(albumKey) || albumKey.includes(key))));
+  });
+  if (!match) return null;
+
+  return {
+    ...match,
+    title: albumTrack.title,
+    artist: albumTrack.artist || album.artist,
+    duration: albumTrack.duration || match.duration,
+    thumbnail: album.cover || match.thumbnail || `https://i.ytimg.com/vi/${match.id}/hqdefault.jpg`
+  };
+}
+
+/** Completa las pistas que falten y devuelve la lista en el orden exacto del álbum. */
+async function fillMissingAlbumTracks(
+  album: AlbumInfo,
+  partial: CatalogTrack[],
+  fillMissing: boolean
+): Promise<CatalogTrack[]> {
+  const byKey = new Map<string, CatalogTrack>();
+  for (const track of partial) {
+    const key = canonicalSongKey(track.title);
+    if (key) byKey.set(key, track);
+  }
+
+  const result: CatalogTrack[] = [];
+  const pending: AlbumTrackInfo[] = [];
+  for (const albumTrack of album.tracks) {
+    const key = canonicalSongKey(albumTrack.title);
+    const found = key ? byKey.get(key) : null;
+    if (found) result.push(found);
+    else pending.push(albumTrack);
+  }
+
+  if (!fillMissing) return result;
+
+  // Secuencial y espaciado: YouTube bloquea ráfagas de búsquedas paralelas.
+  for (const albumTrack of pending) {
+    const found = await searchAlbumTrackVideo(album, albumTrack);
+    if (found) result.push(found);
+    await new Promise(resolve => setTimeout(resolve, 300));
+  }
+
+  // Reordenar estrictamente según el álbum.
+  const ordered: CatalogTrack[] = [];
+  const used = new Set<string>();
+  for (const albumTrack of album.tracks) {
+    const key = canonicalSongKey(albumTrack.title);
+    const track = result.find(item => {
+      if (used.has(item.id)) return false;
+      const itemKey = canonicalSongKey(item.title);
+      return itemKey === key;
+    });
+    if (track) {
+      used.add(track.id);
+      ordered.push(track);
+    }
+  }
+  return ordered;
+}
+
+/** Busca el mejor playlist de YouTube que corresponda al álbum resuelto. */
+async function findYouTubeAlbumTracks(album: AlbumInfo, fillMissing: boolean = false, thorough: boolean = false): Promise<CatalogTrack[]> {
+  const queries = thorough
+    ? [
+        `${album.artist} ${album.title}`,
+        `${album.artist} ${album.title} album`,
+        `${album.title} ${album.artist} full album`
+      ]
+    : [`${album.artist} ${album.title}`];
+
+  const candidates: PlaylistCandidate[] = [];
+  const seen = new Set<string>();
+  for (const query of queries) {
+    const found = await searchYouTubePlaylists(query, thorough ? 8 : 5);
+    for (const candidate of found) {
+      if (!candidate.id || seen.has(candidate.id)) continue;
+      seen.add(candidate.id);
+      candidates.push(candidate);
+    }
+    if (candidates.length >= (thorough ? 14 : 5)) break;
+  }
+
+  candidates.sort((a, b) => scoreAlbumPlaylistCandidate(b.title, album) - scoreAlbumPlaylistCandidate(a.title, album));
+
+  let bestTracks: CatalogTrack[] = [];
+  let bestScore = -1;
+
+  for (const candidate of candidates.slice(0, thorough ? 4 : 1)) {
+    if (scoreAlbumPlaylistCandidate(candidate.title, album) < 0) continue;
+    const playlistTracks = await scrapeYouTubePlaylist(candidate.id);
+    if (playlistTracks.length < 3) continue;
+
+    const matched: CatalogTrack[] = [];
+    const usedIds = new Set<string>();
+    for (const albumTrack of album.tracks) {
+      const albumKey = canonicalSongKey(albumTrack.title);
+      const found = playlistTracks.find(track => {
+        if (usedIds.has(track.id)) return false;
+        const key = canonicalSongKey(track.title);
+        return key === albumKey || (key.length > 4 && albumKey.length > 4 && (key.includes(albumKey) || albumKey.includes(key)));
+      });
+      if (found) {
+        usedIds.add(found.id);
+        matched.push({
+          ...found,
+          title: albumTrack.title,
+          artist: albumTrack.artist || album.artist,
+          duration: albumTrack.duration || found.duration,
+          thumbnail: found.thumbnail || album.cover || `https://i.ytimg.com/vi/${found.id}/hqdefault.jpg`
+        });
+      }
+    }
+
+    const score = matched.length * 20 + Math.min(playlistTracks.length, 25);
+    if (matched.length >= Math.min(5, album.tracks.length) && score > bestScore) {
+      bestScore = score;
+      bestTracks = matched;
+    }
+  }
+
+  if (bestTracks.length > 0) {
+    return fillMissingAlbumTracks(album, bestTracks, fillMissing);
+  }
+
+  // Sin playlist fiable: solo se buscan pistas sueltas cuando se pidió un álbum completo.
+  if (!fillMissing) return [];
+  return fillMissingAlbumTracks(album, [], true);
+}
+
+/**
+ * Construye la cola de un álbum completo:
+ * canción pedida (si la hay) + todas las pistas del álbum en su orden.
+ */
+export async function searchYouTubeAlbum(rawQuery: string): Promise<MusicSearchResult | null> {
+  const album = await resolveAlbumInfo(rawQuery);
+  if (!album) return null;
+
+  console.log(`[AlbumEngine] 💿 Álbum resuelto: "${album.title}" - "${album.artist}" (${album.tracks.length} pistas)`);
+
+  let tracks = await findYouTubeAlbumTracks(album, true, true);
+  if (tracks.length === 0) return null;
+
+  const requested = album.requestedTrack;
+  if (requested && requested.title) {
+    const requestedKey = canonicalSongKey(requested.title);
+    const existingIndex = tracks.findIndex(track => {
+      const key = canonicalSongKey(track.title);
+      return key === requestedKey || (key.length > 4 && requestedKey.length > 4 && (key.includes(requestedKey) || requestedKey.includes(key)));
+    });
+
+    if (existingIndex > 0) {
+      const [found] = tracks.splice(existingIndex, 1);
+      tracks.unshift(found);
+    } else if (existingIndex < 0) {
+      // La canción pedida no está en el álbum (single/compilación): se reproduce primero.
+      const videos = await scrapeYouTubeVideos(`${requested.artist || album.artist} ${requested.title}`, 6);
+      const match = videos.find(video => {
+        const key = canonicalSongKey(video.title);
+        return key === requestedKey || (key.length > 4 && requestedKey.length > 4 && (key.includes(requestedKey) || requestedKey.includes(key)));
+      });
+      if (match) {
+        tracks.unshift({
+          ...match,
+          title: requested.title,
+          artist: requested.artist || album.artist,
+          duration: requested.duration || match.duration
+        });
+      }
+    }
+  }
+
+  // Si el álbum no pudo mapearse a YouTube (red/región), al menos reproducir la
+  // canción pedida o el mejor resultado de la consulta; nunca IDs inventados.
+  if (tracks.length === 0) {
+    const fallbackQuery = requested?.title
+      ? `${requested.artist || album.artist} ${requested.title}`.trim()
+      : rawQuery;
+    const videos = await scrapeYouTubeVideos(fallbackQuery, 6);
+    const first = videos.find(video => isValidSongTitle(video.title));
+    if (first) {
+      tracks = [{
+        ...first,
+        title: requested?.title || first.title,
+        artist: requested?.artist || album.artist || first.artist,
+        duration: requested?.duration || first.duration
+      }];
+    }
+  }
+
+  const items = dedupeCatalogTracks(tracks).slice(0, 45);
+  if (items.length === 0) return null;
+
+  return {
+    source: 'youtube_album',
+    firstTrack: items[0],
+    items
+  };
+}
+
+/**
  * Busca el ID de una playlist oficial del artista
  */
 export async function searchYouTubePlaylistId(query: string): Promise<string | null> {
@@ -1058,6 +1601,26 @@ export async function buildArtistAndMixPlaylist(
   isArtistOnly: boolean = false,
   extraCandidates: CatalogTrack[] = []
 ): Promise<CatalogTrack[]> {
+  // Si el buscador devolvió un título pobre (a veces repite la consulta o llega
+  // sin artista), se corrige con los metadatos reales del video antes de armar la cola.
+  if (topTrack?.id) {
+    try {
+      const meta = await fetchVideoMetadata(topTrack.id);
+      if (meta && meta.title) {
+        topTrack = {
+          ...topTrack,
+          title: meta.title,
+          artist: meta.artist || topTrack.artist,
+          duration: topTrack.duration && topTrack.duration !== '3:45'
+            ? topTrack.duration
+            : (meta.duration || topTrack.duration)
+        };
+      }
+    } catch {
+      // Sin red: se conserva lo que entregó la búsqueda.
+    }
+  }
+
   // 1. Deducir y limpiar el nombre del artista principal
   let candidateArtist = (topTrack.artist || '').trim();
   let rawTitle = (topTrack.title || '').trim();
@@ -1109,26 +1672,56 @@ export async function buildArtistAndMixPlaylist(
 
   try {
     // 2. Obtener en paralelo:
-    // a) YouTube Mix oficial de la canción (list=RD[videoId])
-    // b) Más canciones populares del MISMO artista
-    // c) Éxitos adicionales del artista
-    const [mixTracks, artistHits1, artistHits2] = await Promise.all([
+    // a) Álbum al que pertenece la canción (para que la cola siga el disco real)
+    // b) YouTube Mix oficial de la canción (list=RD[videoId])
+    // c) Más canciones populares del MISMO artista
+    // d) Éxitos adicionales del artista
+    const albumQueuePromise = (async (): Promise<CatalogTrack[]> => {
+      try {
+        const album = await resolveAlbumInfo(`${candidateArtist} ${cleanTopTrack.title}`.trim());
+        if (!album) return [];
+        const albumTracks = await findYouTubeAlbumTracks(album);
+        return albumTracks.map(track => ({
+          ...track,
+          artist: track.artist || album.artist || candidateArtist,
+          duration: track.duration || '3:45'
+        }));
+      } catch {
+        return [];
+      }
+    })();
+
+    const [mixTracks, artistHits1, artistHits2, albumTracks] = await Promise.all([
       scrapeYouTubeMix(topTrack.id).catch(() => []),
       candidateArtist && candidateArtist.length > 1
         ? scrapeYouTubeVideos(`${candidateArtist} canciones populares official music video`, 12).catch(() => [])
         : Promise.resolve([]),
       candidateArtist && candidateArtist.length > 1
         ? scrapeYouTubeVideos(`${candidateArtist} greatest hits official video`, 10).catch(() => [])
-        : Promise.resolve([])
+        : Promise.resolve([]),
+      albumQueuePromise
     ]);
 
     // Pool de candidatos priorizando:
-    // 1) Más canciones del mismo artista (para reproducir la discografía / lista del artista)
-    // 2) YouTube Mix oficial de la pista #1
-    // 3) Candidatos adicionales de Google Videos / alternativas
+    // 1) Pistas del ÁLBUM real al que pertenece la canción (orden del disco)
+    // 2) Más canciones del mismo artista (discografía / lista del artista)
+    // 3) YouTube Mix oficial de la pista #1
+    // 4) Candidatos adicionales de Google Videos / alternativas
+    const artistKey = normalizeText(candidateArtist).replace(/\s+/g, '');
+    const isSameRequestedArtist = (track: CatalogTrack): boolean => {
+      if (!artistKey) return true;
+      const trackArtist = normalizeText(track.artist || '').replace(/\s+/g, '');
+      const trackTitle = normalizeText(track.title || '').replace(/\s+/g, '');
+      return trackArtist.includes(artistKey) ||
+        artistKey.includes(trackArtist) ||
+        trackTitle.includes(artistKey);
+    };
+
+    const sameArtistHits = [...artistHits1, ...artistHits2].filter(isSameRequestedArtist);
+
     const candidatePool = [
-      ...artistHits1,
-      ...artistHits2,
+      ...albumTracks,
+      ...sameArtistHits,
       ...mixTracks,
       ...extraCandidates
     ];
@@ -1199,7 +1792,7 @@ export async function buildArtistAndMixPlaylist(
     console.warn('[ArtistMixEngine] Error generando cola de artista:', err);
   }
 
-  return fullPlaylist;
+  return dedupeCatalogTracks(fullPlaylist);
 }
 
 /**
@@ -1313,10 +1906,11 @@ export async function searchYouTubeMusic(
       }
 
       if (uniqueQueue.length > 0) {
+        const items = dedupeCatalogTracks(uniqueQueue);
         return {
           source: "youtube_coherent_artist_playlist",
-          firstTrack: uniqueQueue[0],
-          items: uniqueQueue
+          firstTrack: items[0],
+          items
         };
       }
     }
@@ -1332,7 +1926,22 @@ export async function searchYouTubeMusic(
       }));
 
       scoredCandidates.sort((a, b) => b.score - a.score);
-      const requestedTrack = scoredCandidates[0].item;
+      let requestedTrack = scoredCandidates[0].item;
+
+      // Corregir títulos que llegan como la consulta literal o sin artista.
+      try {
+        const meta = await fetchVideoMetadata(requestedTrack.id);
+        if (meta && meta.title) {
+          requestedTrack = {
+            ...requestedTrack,
+            title: meta.title,
+            artist: meta.artist || requestedTrack.artist,
+            duration: meta.duration || requestedTrack.duration
+          };
+        }
+      } catch {
+        // Se usa el candidato original.
+      }
 
       let candidateArtist = requestedTrack.artist || mainArtist;
       if (requestedTrack.title.includes(" - ")) {
@@ -1412,10 +2021,11 @@ export async function searchYouTubeMusic(
         if (finalPlaylist.length >= 40) break;
       }
 
+      const items = dedupeCatalogTracks(finalPlaylist);
       return {
         source: "youtube_genre_coherent_queue",
-        firstTrack: finalPlaylist[0],
-        items: finalPlaylist
+        firstTrack: items[0],
+        items
       };
     }
   } catch (err) {

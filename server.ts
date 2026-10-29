@@ -27,6 +27,9 @@ import {
   sanitizeSongTitleAndArtist,
   isGenericArtistWord,
   fetchVideoMetadata,
+  canonicalSongKey,
+  extractAlbumCommand,
+  searchYouTubeAlbum,
   type CatalogTrack
 } from "./youtubeEngine.ts";
 import { resolveMusicalContext, isTrackGenreCoherent } from "./musicContextEngine.ts";
@@ -1991,6 +1994,7 @@ function sanitizeTrackList(items: CatalogTrack[], defaultArtist: string = 'Músi
   if (!Array.isArray(items)) return [];
   const clean: CatalogTrack[] = [];
   const seenIds = new Set<string>();
+  const seenSongs = new Set<string>();
 
   for (const t of items) {
     if (!t || !t.id || seenIds.has(t.id)) continue;
@@ -1999,7 +2003,12 @@ function sanitizeTrackList(items: CatalogTrack[], defaultArtist: string = 'Músi
     const sanitized = sanitizeSongTitleAndArtist(t.title, t.artist);
     if (!sanitized.isValid) continue;
 
+    // 🛡️ ANTI-REPETICIÓN: la misma canción en otro canal/versión no entra dos veces.
+    const songKey = canonicalSongKey(sanitized.title);
+    if (songKey && seenSongs.has(songKey)) continue;
+
     seenIds.add(t.id);
+    if (songKey) seenSongs.add(songKey);
 
     let artist = sanitized.artist;
     if (!artist || isGenericArtistWord(artist)) {
@@ -2020,7 +2029,7 @@ function sanitizeTrackList(items: CatalogTrack[], defaultArtist: string = 'Músi
 }
 
 app.get("/api/youtube/search", async (req, res) => {
-  const query = (req.query.q as string || "").trim();
+  let query = (req.query.q as string || "").trim();
   const isArtistOnly = req.query.isArtist === "true";
 
   if (!query) {
@@ -2043,6 +2052,30 @@ app.get("/api/youtube/search", async (req, res) => {
     }
     return res.json(payload);
   };
+
+  // ── 0) ORDEN "ÁLBUM COMPLETO" ────────────────────────────────────────────────
+  // "reproduce eminem slim shady album completo" -> canción pedida + álbum en orden.
+  const albumRequest = extractAlbumCommand(query);
+  if (albumRequest.isAlbum) {
+    try {
+      const albumResult = await searchYouTubeAlbum(albumRequest.query);
+      if (albumResult && albumResult.items.length > 0) {
+        const cleanItems = sanitizeTrackList(albumResult.items, albumRequest.query);
+        if (cleanItems.length > 0) {
+          console.log(`[Búsqueda] 💿 Álbum completo resuelto para "${albumRequest.query}": ${cleanItems.length} pistas`);
+          return responder({
+            source: 'youtube_album',
+            firstTrack: cleanItems[0],
+            items: cleanItems
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('[Búsqueda] Error resolviendo álbum completo:', err);
+    }
+    // Si no se pudo resolver el álbum, seguir con la búsqueda normal sin la frase "álbum completo".
+    query = albumRequest.query || query;
+  }
 
   // ── 1) BÚSQUEDA DIRECTA EN GOOGLE.COM SECCIÓN VIDEOS ──────────────────────────
   // Se busca la frase completa SIN correcciones en google.com sección videos y se abre
@@ -2128,25 +2161,12 @@ app.get("/api/youtube/search", async (req, res) => {
     }
   }
 
-  // 3. Fallback inteligente basado en el artista o consulta solicitada
-  const context = await resolveMusicalContext(query);
-  const fallbackArtist = context.requestedArtist || query;
-  const fallbackTracks = context.topArtistSongs.length > 0
-    ? context.topArtistSongs.slice(0, 7)
-    : [`${fallbackArtist} - Éxito 1`, `${fallbackArtist} - Éxito 2`, `${fallbackArtist} - Éxito 3`];
-
-  const results: CatalogTrack[] = fallbackTracks.map((title, idx) => ({
-    id: `custom_${idx}_${Date.now()}`,
-    title: isArtistOnly ? `${fallbackArtist} - ${title}` : (idx === 0 ? `${query} (Audio Oficial)` : title),
-    artist: fallbackArtist,
-    thumbnail: `https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=500&auto=format&fit=crop&q=60`,
-    duration: "3:45"
-  }));
-
+  // 3. Sin resultados reales: NUNCA inventar IDs "custom_" (no son reproducibles).
+  // Es preferible avisar que no se encontró antes que llenar la cola de pistas falsas.
   return res.json({
-    source: 'coherent_fallback',
-    firstTrack: results[0],
-    items: results
+    source: 'sin_coincidencia',
+    items: [],
+    motivo: `No encontré una pista reproducible para "${query}"`
   });
 });
 

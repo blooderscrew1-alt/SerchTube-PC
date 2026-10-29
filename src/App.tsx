@@ -1406,8 +1406,26 @@ export default function App() {
   const [isScreensaverActive, setIsScreensaverActive] = useState<boolean>(false);
   const [satelliteCommandNotification, setSatelliteCommandNotification] = useState<{ nodeName: string; text?: string; timestamp: number } | null>(null);
 
-  // Auto-hide mouse cursor and clear sticky hover highlights on idle (initial launch + 2.5s inactivity)
+  // Auto-hide mouse cursor and clear sticky hover highlights on idle (solo en el HOST).
+  // En el mando/satélite del teléfono NO se oculta nada: allí no hay cursor y ocultar
+  // textos/portadas cada 2,5 s hacía que la interfaz pareciera vaciarse.
   useEffect(() => {
+    const pathname = typeof window !== 'undefined' ? window.location.pathname.toLowerCase() : '';
+    const isRemoteUi =
+      nodeRole === 'satellite' ||
+      pathname.startsWith('/remote') ||
+      pathname.startsWith('/mando') ||
+      pathname.startsWith('/satellite') ||
+      pathname.startsWith('/control');
+
+    if (isRemoteUi) {
+      document.body.classList.remove('cursor-idle-hidden');
+      document.body.classList.add('remote-control-ui');
+      return () => {
+        document.body.classList.remove('remote-control-ui');
+      };
+    }
+
     let idleTimer: any = null;
     const IDLE_DELAY = 2500; // 2.5 seconds of inactivity to disappear cursor
 
@@ -1441,7 +1459,7 @@ export default function App() {
       });
       document.body.classList.remove('cursor-idle-hidden');
     };
-  }, []);
+  }, [nodeRole]);
 
   // Auto-clear satellite command notification after 5 seconds
   useEffect(() => {
@@ -2275,6 +2293,7 @@ export default function App() {
       const rawItems: Track[] = (data.items && Array.isArray(data.items) && data.items.length > 0)
         ? data.items
         : (data.firstTrack ? [data.firstTrack] : []);
+      const isAlbumResult = data?.source === 'youtube_album';
 
       if (rawItems.length > 0) {
         // Guarantee real YouTube thumbnail for every track in queue and prevent duplicates
@@ -2321,8 +2340,9 @@ export default function App() {
           currentTime: 0
         }));
 
-        // Sincronizar inmediatamente con la cola oficial de YouTube Mix ("Más videos" / recomendaciones) para continuidad de música
-        if (selected && selected.id) {
+        // Sincronizar inmediatamente con la cola oficial de YouTube Mix ("Más videos" / recomendaciones) para continuidad de música.
+        // Si es un álbum completo, la cola ya viene en el orden correcto del disco y NO se debe reemplazar.
+        if (selected && selected.id && !isAlbumResult) {
           fetch(`/api/youtube/related?videoId=${selected.id}&artist=${encodeURIComponent(selected.artist || '')}&title=${encodeURIComponent(selected.title || '')}`)
             .then(r => r.ok ? r.json() : null)
             .then(relData => {
