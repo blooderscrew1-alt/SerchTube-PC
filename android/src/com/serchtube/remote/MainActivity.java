@@ -1,8 +1,13 @@
 package com.serchtube.remote;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.DialogInterface;
+import android.content.Intent;
 import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.text.InputType;
@@ -21,6 +26,8 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import java.io.ByteArrayOutputStream;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.Inet4Address;
 import java.net.InetAddress;
@@ -35,6 +42,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 
+import org.json.JSONObject;
+
 /**
  * Contenedor Android de SerchTube Remote.
  *
@@ -46,6 +55,8 @@ public class MainActivity extends Activity {
     private static final int PORT = 3000;
     private static final String PREFS = "serchtube_remote";
     private static final String KEY_HOST = "host";
+    private static final String VERSION_URL =
+            "https://raw.githubusercontent.com/blooderscrew1-alt/SerchTube-PC/main/public/android-version.json";
     private static final int BG = Color.rgb(13, 11, 18);
     private static final int FG = Color.rgb(248, 243, 255);
     private static final int MUTED = Color.rgb(180, 170, 200);
@@ -91,6 +102,8 @@ public class MainActivity extends Activity {
         } else {
             discoverHosts(true, null);
         }
+
+        checkForUpdates();
     }
 
     /** Primer arranque con host guardado: probarlo antes de escanear toda la red. */
@@ -110,6 +123,74 @@ public class MainActivity extends Activity {
                         }
                     }
                 });
+            }
+        }).start();
+    }
+
+    /** Consulta GitHub en segundo plano; solo muestra diálogo si hay versión nueva. */
+    private void checkForUpdates() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                HttpURLConnection connection = null;
+                try {
+                    URL url = new URL(VERSION_URL + "?t=" + System.currentTimeMillis());
+                    connection = (HttpURLConnection) url.openConnection();
+                    connection.setConnectTimeout(3500);
+                    connection.setReadTimeout(3500);
+                    connection.setRequestMethod("GET");
+                    connection.setInstanceFollowRedirects(true);
+                    if (connection.getResponseCode() != 200) return;
+
+                    InputStream input = connection.getInputStream();
+                    ByteArrayOutputStream output = new ByteArrayOutputStream();
+                    byte[] buffer = new byte[1024];
+                    int read;
+                    while ((read = input.read(buffer)) > 0) {
+                        output.write(buffer, 0, read);
+                        if (output.size() > 16384) break;
+                    }
+                    input.close();
+
+                    JSONObject json = new JSONObject(output.toString("UTF-8"));
+                    final int latestCode = json.optInt("versionCode", 0);
+                    final String latestName = json.optString("versionName", "");
+                    final String apkUrl = json.optString("apkUrl", "");
+
+                    PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+                    int currentCode = Build.VERSION.SDK_INT >= 28
+                            ? (int) info.getLongVersionCode()
+                            : info.versionCode;
+
+                    if (latestCode <= currentCode || !apkUrl.startsWith("https://")) return;
+                    if (isFinishing()) return;
+
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            new AlertDialog.Builder(MainActivity.this)
+                                    .setTitle("Actualización disponible")
+                                    .setMessage("Hay una nueva versión de SerchTube Remote"
+                                            + (latestName.length() > 0 ? " (" + latestName + ")" : "")
+                                            + ". ¿Quieres descargarla?")
+                                    .setPositiveButton("Descargar", new DialogInterface.OnClickListener() {
+                                        @Override
+                                        public void onClick(DialogInterface dialog, int which) {
+                                            try {
+                                                startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(apkUrl)));
+                                            } catch (Exception ignored) {
+                                            }
+                                        }
+                                    })
+                                    .setNegativeButton("Ahora no", null)
+                                    .show();
+                        }
+                    });
+                } catch (Exception ignored) {
+                    // Sin internet o sin actualización: no se molesta al usuario.
+                } finally {
+                    if (connection != null) connection.disconnect();
+                }
             }
         }).start();
     }
