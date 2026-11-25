@@ -4766,13 +4766,25 @@ export default function App() {
           AudioEngine.getInstance().playBeep('neutral');
         }}
         onToggleListening={handleToggleListening}
-        onDirectSearch={(query) => {
+        onPlayNow={(track) => {
+          const selected = cleanQueueTrack(track);
+          if (!selected?.id) return;
+          setPlayerState(prev => ({
+            ...prev,
+            currentTrack: selected,
+            isPlaying: true,
+            currentTime: 0,
+            duration: 0
+          }));
           NodeSyncService.getInstance().sendCommandToMaster({
-            action: 'play',
-            query,
-            rawQuery: query
+            action: 'load_video',
+            videoId: selected.id,
+            title: selected.title,
+            artist: selected.artist,
+            thumbnail: selected.thumbnail,
+            duration: selected.duration
           });
-          setAssistantResponse(`Enviando al coche: "${query}"`);
+          setAssistantResponse(`▶️ Reproduciendo: "${getTrackDisplayTitle(selected)}"`);
           AudioEngine.getInstance().playBeep('up');
         }}
       />

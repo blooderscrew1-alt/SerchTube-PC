@@ -29,7 +29,7 @@ import {
   X
 } from 'lucide-react';
 import { PlayerState, SystemStatus, Track } from '../types';
-import { getTrackDisplayArtist, getTrackDisplayTitle } from '../utils/queueTracks';
+import { cleanQueueTrack, getTrackDisplayArtist, getTrackDisplayTitle } from '../utils/queueTracks';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 import './mobileRemote.css';
 
@@ -52,7 +52,7 @@ interface MobileRemoteUIProps {
   onToggleRepeat: () => void;
   onToggleNonStop: () => void;
   onToggleListening: () => void;
-  onDirectSearch: (query: string) => void;
+  onPlayNow: (track: Track) => void;
 }
 
 type Screen = 'queue' | 'player' | 'search';
@@ -97,7 +97,7 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   onToggleRepeat,
   onToggleNonStop,
   onToggleListening,
-  onDirectSearch
+  onPlayNow
 }) => {
   const [screen, setScreen] = useState<Screen>(() => {
     try {
@@ -108,6 +108,11 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   });
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme);
   const [searchText, setSearchText] = useState('');
+  const [searchResults, setSearchResults] = useState<Track[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const [selectedResult, setSelectedResult] = useState<Track | null>(null);
+  const [feedback, setFeedback] = useState('');
   const [menuOpen, setMenuOpen] = useState(false);
   const [volumeOpen, setVolumeOpen] = useState(false);
   const [scrub, setScrub] = useState<number | null>(null);
@@ -287,13 +292,60 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
     return () => window.removeEventListener('pointerdown', close);
   }, [menuOpen]);
 
-  const submitSearch = (event?: React.FormEvent) => {
+  useEffect(() => {
+    if (!feedback) return undefined;
+    const timer = window.setTimeout(() => setFeedback(''), 2600);
+    return () => window.clearTimeout(timer);
+  }, [feedback]);
+
+  const submitSearch = async (event?: React.FormEvent) => {
     event?.preventDefault();
     const query = searchText.trim();
     if (!query) return;
-    onDirectSearch(query);
-    setSearchText('');
+
+    setSearching(true);
+    setSearchError('');
+    setSearchResults([]);
+    try {
+      const response = await fetch(`/api/youtube/search?q=${encodeURIComponent(query)}&isArtist=false`);
+      const data = await response.json();
+      const rawItems: Track[] = Array.isArray(data?.items) && data.items.length > 0
+        ? data.items
+        : (data?.firstTrack ? [data.firstTrack] : []);
+
+      const seen = new Set<string>();
+      const cleaned = rawItems
+        .map(item => cleanQueueTrack(item))
+        .filter(item => {
+          if (!item?.id || seen.has(item.id)) return false;
+          seen.add(item.id);
+          return true;
+        })
+        .slice(0, 30);
+
+      setSearchResults(cleaned);
+      if (cleaned.length === 0) {
+        setSearchError(data?.motivo || 'No encontré resultados para esa búsqueda.');
+      }
+    } catch {
+      setSearchError('No se pudo buscar. Revisa la conexión con el host.');
+    } finally {
+      setSearching(false);
+    }
+  };
+
+  const playSelectedNow = () => {
+    if (!selectedResult) return;
+    onPlayNow(selectedResult);
+    setSelectedResult(null);
     setScreen('player');
+  };
+
+  const enqueueSelected = () => {
+    if (!selectedResult) return;
+    onEnqueueTrack(selectedResult);
+    setFeedback(`“${getTrackDisplayTitle(selectedResult)}” añadida a la cola`);
+    setSelectedResult(null);
   };
 
   const commitSeek = () => {
@@ -756,17 +808,89 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
             <button type="submit" disabled={!searchText.trim()}>Ir</button>
           </form>
 
-          <div className="mr-search-hints">
-            <p>Prueba con:</p>
-            <button type="button" onClick={() => { setSearchText('reproduce eminem slim shady album completo'); searchInputRef.current?.focus(); }}>
-              “eminem slim shady album completo”
-            </button>
-            <button type="button" onClick={() => { setSearchText('reproduce arjona Déjame decir que te amo album completo'); searchInputRef.current?.focus(); }}>
-              “arjona Déjame decir que te amo album completo”
-            </button>
+          <div className="mr-search-results">
+            {searching && (
+              <div className="mr-search-state">
+                <span className="mr-search-spinner" />
+                Buscando en el host…
+              </div>
+            )}
+
+            {!searching && searchError && (
+              <div className="mr-search-state is-error">{searchError}</div>
+            )}
+
+            {!searching && !searchError && searchResults.map(track => {
+              const trackTitle = getTrackDisplayTitle(track);
+              const trackArtist = getTrackDisplayArtist(track);
+              const trackCover = track.thumbnail || (track.id ? `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg` : '');
+              return (
+                <button
+                  type="button"
+                  key={track.id}
+                  className="mr-result"
+                  onClick={() => setSelectedResult(track)}
+                >
+                  <span className="mr-result-cover">
+                    {trackCover ? <img src={trackCover} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <Music2 size={18} />}
+                  </span>
+                  <span className="mr-result-copy">
+                    <strong>{trackTitle}</strong>
+                    <span>{trackArtist}</span>
+                  </span>
+                  <span className="mr-result-menu"><MoreHorizontal size={18} /></span>
+                </button>
+              );
+            })}
+
+            {!searching && !searchError && searchResults.length === 0 && (
+              <div className="mr-search-hints">
+                <p>Busca y elige qué hacer:</p>
+                <button type="button" onClick={() => { setSearchText('eminem slim shady album completo'); searchInputRef.current?.focus(); }}>
+                  “eminem slim shady album completo”
+                </button>
+                <button type="button" onClick={() => { setSearchText('arjona Déjame decir que te amo album completo'); searchInputRef.current?.focus(); }}>
+                  “arjona Déjame decir que te amo album completo”
+                </button>
+              </div>
+            )}
           </div>
         </section>
       </div>
+
+      {feedback && <div className="mr-toast">{feedback}</div>}
+
+      {selectedResult && (
+        <div className="mr-sheet-backdrop" onClick={() => setSelectedResult(null)}>
+          <div className="mr-action-sheet" onClick={(event) => event.stopPropagation()}>
+            <div className="mr-sheet-track">
+              <span className="mr-sheet-cover">
+                {selectedResult.thumbnail
+                  ? <img src={selectedResult.thumbnail} alt="" referrerPolicy="no-referrer" />
+                  : <Music2 size={20} />}
+              </span>
+              <span className="mr-sheet-copy">
+                <strong>{getTrackDisplayTitle(selectedResult)}</strong>
+                <span>{getTrackDisplayArtist(selectedResult)}</span>
+              </span>
+              <button type="button" className="mr-sheet-close" aria-label="Cerrar" onClick={() => setSelectedResult(null)}>
+                <X size={17} />
+              </button>
+            </div>
+            <button type="button" className="mr-sheet-action is-primary" onClick={playSelectedNow}>
+              <Play size={18} className="mr-fill" />
+              <span>Reproducir ahora mismo</span>
+            </button>
+            <button type="button" className="mr-sheet-action" onClick={enqueueSelected}>
+              <Plus size={19} />
+              <span>Agregar a la cola</span>
+            </button>
+            <button type="button" className="mr-sheet-cancel" onClick={() => setSelectedResult(null)}>
+              Cancelar
+            </button>
+          </div>
+        </div>
+      )}
 
       {installOpen && (
         <div className="mr-modal-backdrop" onClick={() => setInstallOpen(false)}>
