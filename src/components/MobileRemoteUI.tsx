@@ -81,7 +81,7 @@ function getInitialTheme(): 'light' | 'dark' {
 const WAVE_BARS = [18, 30, 24, 44, 34, 22, 40, 52, 28, 18, 38, 46, 24, 32, 20, 42, 30, 16];
 
 const ANDROID_APK_URL =
-  'https://raw.githubusercontent.com/blooderscrew1-alt/SerchTube-PC/main/public/SerchTubeRemote.apk?v=4';
+  'https://raw.githubusercontent.com/blooderscrew1-alt/SerchTube-PC/main/public/SerchTubeRemote-1.3.apk';
 
 export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   playerState,
