@@ -112,6 +112,7 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   const [installOpen, setInstallOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(() => !!document.fullscreenElement);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const fullscreenHistoryRef = useRef(false);
   const { isInstalled, install, browserName } = usePWAInstall();
 
   const queue = useMemo<Track[]>(() => {
@@ -162,10 +163,17 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
     } catch {}
   };
 
+  const exitFullscreen = () => {
+    try {
+      const result = document.exitFullscreen?.();
+      if (result && typeof result.catch === 'function') result.catch(() => {});
+    } catch {}
+  };
+
   const toggleFullscreen = () => {
     try {
       if (document.fullscreenElement) {
-        document.exitFullscreen?.().catch(() => {});
+        exitFullscreen();
       } else {
         requestFullscreen();
       }
@@ -178,23 +186,81 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   };
 
   useEffect(() => {
-    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
-    document.addEventListener('fullscreenchange', onChange);
-
-    // Los navegadores exigen un gesto del usuario para entrar en fullscreen.
-    // Se intenta en el primer toque para que el mando parezca una app nativa.
-    const onFirstTouch = () => {
-      requestFullscreen();
-      window.removeEventListener('pointerdown', onFirstTouch);
-      window.removeEventListener('keydown', onFirstTouch);
+    const pushFullscreenGuard = () => {
+      if (fullscreenHistoryRef.current) return;
+      try {
+        history.pushState({ ...(history.state || {}), __serchtubeFullscreen: true }, '', location.href);
+        fullscreenHistoryRef.current = true;
+      } catch {}
     };
-    window.addEventListener('pointerdown', onFirstTouch, { once: true });
-    window.addEventListener('keydown', onFirstTouch, { once: true });
+
+    const dropFullscreenGuard = () => {
+      if (!fullscreenHistoryRef.current) return;
+      fullscreenHistoryRef.current = false;
+      try {
+        if (history.state?.__serchtubeFullscreen) history.back();
+      } catch {}
+    };
+
+    const onChange = () => {
+      const active = !!document.fullscreenElement;
+      setIsFullscreen(active);
+      if (active) pushFullscreenGuard();
+      else dropFullscreenGuard();
+    };
+
+    // El botón Atrás del teléfono primero abandona pantalla completa y recién
+    // después permite salir de la página. El estado extra de historial hace que
+    // ese primer "Atrás" no navegue fuera del mando.
+    const onPopState = () => {
+      if (document.fullscreenElement) {
+        fullscreenHistoryRef.current = false;
+        exitFullscreen();
+      }
+    };
+
+    const tryEnterFullscreen = () => {
+      if (!document.fullscreenElement) requestFullscreen();
+    };
+
+    const gestureEvents = ['pointerdown', 'touchstart', 'click', 'keydown'] as const;
+    const onGesture = () => tryEnterFullscreen();
+
+    const stopGestureListeners = () => {
+      gestureEvents.forEach(eventName => {
+        window.removeEventListener(eventName, onGesture, true);
+      });
+    };
+
+    // Intentos automáticos al arrancar (el navegador puede rechazarlos hasta
+    // que exista un gesto) y en cada gesto hasta lograrlo.
+    const bootTimers = [
+      window.setTimeout(tryEnterFullscreen, 350),
+      window.setTimeout(tryEnterFullscreen, 1200)
+    ];
+    gestureEvents.forEach(eventName => {
+      window.addEventListener(eventName, onGesture, { capture: true, passive: true });
+    });
+    const gestureTimeout = window.setTimeout(stopGestureListeners, 20000);
+
+    const onFullscreenForGestures = () => {
+      if (document.fullscreenElement) {
+        stopGestureListeners();
+        window.clearTimeout(gestureTimeout);
+      }
+    };
+
+    document.addEventListener('fullscreenchange', onChange);
+    document.addEventListener('fullscreenchange', onFullscreenForGestures);
+    window.addEventListener('popstate', onPopState);
 
     return () => {
+      bootTimers.forEach(timer => window.clearTimeout(timer));
+      window.clearTimeout(gestureTimeout);
+      stopGestureListeners();
       document.removeEventListener('fullscreenchange', onChange);
-      window.removeEventListener('pointerdown', onFirstTouch);
-      window.removeEventListener('keydown', onFirstTouch);
+      document.removeEventListener('fullscreenchange', onFullscreenForGestures);
+      window.removeEventListener('popstate', onPopState);
     };
   }, []);
 
