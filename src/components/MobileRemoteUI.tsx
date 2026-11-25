@@ -7,6 +7,7 @@ import {
   Download,
   Home,
   Infinity as InfinityIcon,
+  Keyboard,
   ListMusic,
   Maximize2,
   Mic,
@@ -17,6 +18,7 @@ import {
   Pause,
   Play,
   Plus,
+  RefreshCw,
   Repeat,
   Search,
   SkipBack,
@@ -214,6 +216,13 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
 
     const result = await install();
     if (result === 'manual') setInstallOpen(true);
+  };
+
+  const callApkHost = (method: 'searchAnotherHost' | 'enterHostManually') => {
+    try {
+      const bridge = (window as any).SerchTubeHost;
+      if (bridge && typeof bridge[method] === 'function') bridge[method]();
+    } catch {}
   };
 
   useEffect(() => {
@@ -508,6 +517,17 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                         <Download size={15} /> Instalar aplicación
                       </button>
                     )}
+                    {isApkWrapper && (
+                      <>
+                        <div className="mr-menu-divider" />
+                        <button type="button" onClick={() => { callApkHost('searchAnotherHost'); setMenuOpen(false); }}>
+                          <RefreshCw size={15} /> Buscar otro host
+                        </button>
+                        <button type="button" onClick={() => { callApkHost('enterHostManually'); setMenuOpen(false); }}>
+                          <Keyboard size={15} /> Ingresar host manual
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -654,6 +674,17 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                       <button type="button" onClick={() => { handleInstall(); setMenuOpen(false); }}>
                         <Download size={15} /> Instalar aplicación
                       </button>
+                    )}
+                    {isApkWrapper && (
+                      <>
+                        <div className="mr-menu-divider" />
+                        <button type="button" onClick={() => { callApkHost('searchAnotherHost'); setMenuOpen(false); }}>
+                          <RefreshCw size={15} /> Buscar otro host
+                        </button>
+                        <button type="button" onClick={() => { callApkHost('enterHostManually'); setMenuOpen(false); }}>
+                          <Keyboard size={15} /> Ingresar host manual
+                        </button>
+                      </>
                     )}
                   </div>
                 )}

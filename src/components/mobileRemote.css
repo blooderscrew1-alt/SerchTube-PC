@@ -248,6 +248,12 @@
   background: var(--pill);
 }
 
+.mr-menu-divider {
+  height: 1px;
+  margin: 5px 8px;
+  background: var(--line);
+}
+
 .mr-queue-list {
   flex: 1;
   display: flex;

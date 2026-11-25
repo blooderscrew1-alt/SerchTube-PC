@@ -8,7 +8,9 @@ import android.os.Bundle;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -51,6 +53,31 @@ public class MainActivity extends Activity {
     private WebView webView;
     private SharedPreferences prefs;
     private LinearLayout root;
+
+    /** Puente que usa el menú de tres puntos del mando para cambiar de host. */
+    private class HostBridge {
+        @JavascriptInterface
+        public void searchAnotherHost() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    prefs.edit().remove(KEY_HOST).apply();
+                    showSetup("Buscando SerchTube en tu red local…", true);
+                    discoverHost();
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void enterHostManually() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    showSetup("Escribe la dirección del host de SerchTube.", false);
+                }
+            });
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -97,7 +124,10 @@ public class MainActivity extends Activity {
 
     private void showSetup(String message, boolean searching) {
         if (webView != null) {
-            root.removeView(webView);
+            View parent = (View) webView.getParent();
+            if (parent instanceof ViewGroup) {
+                ((ViewGroup) parent).removeView(webView);
+            }
             webView.destroy();
             webView = null;
         }
@@ -238,6 +268,7 @@ public class MainActivity extends Activity {
         settings.setAllowContentAccess(false);
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
+        webView.addJavascriptInterface(new HostBridge(), "SerchTubeHost");
 
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new WebViewClient() {
