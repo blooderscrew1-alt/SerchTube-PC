@@ -3701,6 +3701,24 @@ export default function App() {
     if (validTracks.length === 0) return;
 
     if (nodeRoleRef.current === 'satellite') {
+      // Actualización optimista: el mando muestra la canción de inmediato.
+      // El host confirma después con la cola real; así el botón + nunca parece
+      // "no hacer nada" mientras viaja la orden por WebSocket.
+      const localQueue = [...(playlistQueueRef.current || [])];
+      const localIds = new Set(localQueue.map(t => t.id));
+      let localChanged = false;
+      for (const track of validTracks) {
+        if (!track.id || localIds.has(track.id) || track.id === playerStateRef.current.currentTrack?.id) continue;
+        localIds.add(track.id);
+        localQueue.push(track);
+        localChanged = true;
+      }
+      if (localChanged) {
+        playlistQueueRef.current = localQueue;
+        setPlaylistQueue(localQueue);
+        try { localStorage.setItem('serchtube_playlist_queue', JSON.stringify(localQueue)); } catch {}
+      }
+
       NodeSyncService.getInstance().sendCommandToMaster({
         action: 'enqueue',
         tracks: validTracks,

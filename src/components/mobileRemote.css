@@ -1470,7 +1470,16 @@
 }
 
 .mr-track.is-far {
+  opacity: 1;
+}
+
+.mr-track.is-far .mr-track-cover,
+.mr-track.is-far .mr-track-copy {
   opacity: 0.42;
+}
+
+.mr-track.is-far .mr-track-actions {
+  opacity: 1;
 }
 
 .mr-track.is-far .mr-track-cover {
