@@ -4,11 +4,18 @@ Contenedor nativo mínimo para el mando de SerchTube.
 
 ## Qué hace
 
-- Al abrir por primera vez busca el host de SerchTube en la red Wi‑Fi (puerto 3000).
-- Si lo encuentra, carga `/?role=satellite` en un WebView a pantalla completa.
-- Si no lo encuentra, permite escribir la IP manualmente.
+- Al abrir por primera vez prueba el último host guardado.
+- Si no responde, busca hosts de SerchTube en la red Wi‑Fi (puerto 3000) y conecta al primero disponible.
+- El menú de tres puntos permite:
+  - Escanear el QR que muestra la pantalla del host.
+  - Buscar otro host y elegir de una lista (sin conectar automáticamente).
+  - Ingresar la IP manualmente.
+- Comprueba al iniciar si hay una versión nueva en GitHub y solo muestra un aviso si existe.
 - Guarda la IP para abrir directo las próximas veces.
 - No requiere HTTPS ni instalar la PWA.
+
+El escaneo de QR usa la cámara del sistema y la librería ZXing Core 3.5.3
+(Apache License 2.0), incluida en `android/libs`.
 
 ## Compilar
 

@@ -1,6 +1,6 @@
 {
-  "versionCode": 6,
-  "versionName": "1.5",
-  "apkUrl": "https://raw.githubusercontent.com/blooderscrew1-alt/SerchTube-PC/main/public/SerchTubeRemote-1.5.apk",
-  "notes": "Comprobacion automatica de actualizaciones y seleccion de host."
+  "versionCode": 7,
+  "versionName": "1.6",
+  "apkUrl": "https://raw.githubusercontent.com/blooderscrew1-alt/SerchTube-PC/main/public/SerchTubeRemote-1.6.apk",
+  "notes": "Vinculacion por QR del host, seleccion de host y actualizaciones automaticas."
 }

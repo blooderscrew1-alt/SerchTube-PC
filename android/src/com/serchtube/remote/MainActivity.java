@@ -2,14 +2,18 @@ package com.serchtube.remote;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ContentValues;
 import android.content.DialogInterface;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.MediaStore;
 import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
@@ -25,6 +29,13 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.Toast;
+
+import com.google.zxing.BinaryBitmap;
+import com.google.zxing.DecodeHintType;
+import com.google.zxing.MultiFormatReader;
+import com.google.zxing.RGBLuminanceSource;
+import com.google.zxing.common.HybridBinarizer;
 
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -35,7 +46,9 @@ import java.net.NetworkInterface;
 import java.net.URL;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.EnumMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -53,6 +66,8 @@ import org.json.JSONObject;
  */
 public class MainActivity extends Activity {
     private static final int PORT = 3000;
+    private static final int REQ_QR_SCAN = 4101;
+    private static final int REQ_QR_STORAGE = 4102;
     private static final String PREFS = "serchtube_remote";
     private static final String KEY_HOST = "host";
     private static final String VERSION_URL =
@@ -64,6 +79,7 @@ public class MainActivity extends Activity {
     private WebView webView;
     private SharedPreferences prefs;
     private LinearLayout root;
+    private Uri qrOutputUri;
 
     /** Puente que usa el menú de tres puntos del mando para cambiar de host. */
     private class HostBridge {
@@ -84,6 +100,16 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     showSetup("Escribe la dirección del host de SerchTube.", false);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void scanHostQr() {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    MainActivity.this.scanHostQr();
                 }
             });
         }
@@ -297,7 +323,24 @@ public class MainActivity extends Activity {
         search.setTextColor(FG);
         search.setBackgroundColor(Color.rgb(45, 37, 60));
         search.setEnabled(!searching);
-        root.addView(search, new LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        searchParams.bottomMargin = dp(10);
+        root.addView(search, searchParams);
+
+        Button scanQr = new Button(this);
+        scanQr.setText("Escanear QR del host");
+        scanQr.setAllCaps(false);
+        scanQr.setTextSize(13);
+        scanQr.setTextColor(FG);
+        scanQr.setBackgroundColor(Color.rgb(35, 50, 74));
+        scanQr.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                scanHostQr();
+            }
+        });
+        root.addView(scanQr, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         TextView hint = new TextView(this);
@@ -352,6 +395,131 @@ public class MainActivity extends Activity {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private void scanHostQr() {
+        if (Build.VERSION.SDK_INT < 29
+                && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{
+                    android.Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                    android.Manifest.permission.READ_EXTERNAL_STORAGE
+            }, REQ_QR_STORAGE);
+            return;
+        }
+        launchQrCamera();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_QR_STORAGE) {
+            if (grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                launchQrCamera();
+            } else {
+                Toast.makeText(this, "Permiso de almacenamiento necesario para escanear el QR.", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    private void launchQrCamera() {
+        try {
+            ContentValues values = new ContentValues();
+            values.put(MediaStore.Images.Media.DISPLAY_NAME, "serchtube-qr-" + System.currentTimeMillis() + ".jpg");
+            values.put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg");
+            qrOutputUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values);
+            if (qrOutputUri == null) throw new IllegalStateException("No se pudo crear la foto");
+
+            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            intent.putExtra(MediaStore.EXTRA_OUTPUT, qrOutputUri);
+            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivityForResult(intent, REQ_QR_SCAN);
+        } catch (Exception e) {
+            Toast.makeText(this, "No se pudo abrir la cámara para escanear el QR.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_QR_SCAN) return;
+
+        Uri uri = qrOutputUri;
+        qrOutputUri = null;
+        if (resultCode == RESULT_OK && uri != null) {
+            String text = decodeQrFromUri(uri);
+            if (text != null && text.length() > 0) {
+                applyQrText(text);
+            } else {
+                Toast.makeText(this, "No pude leer el QR. Acércalo más y vuelve a intentar.", Toast.LENGTH_LONG).show();
+            }
+        }
+        if (uri != null) {
+            try { getContentResolver().delete(uri, null, null); } catch (Exception ignored) {}
+        }
+    }
+
+    private String decodeQrFromUri(Uri uri) {
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            InputStream first = getContentResolver().openInputStream(uri);
+            BitmapFactory.decodeStream(first, null, bounds);
+            if (first != null) first.close();
+
+            int sample = 1;
+            while (bounds.outWidth / sample > 1600 || bounds.outHeight / sample > 1600) {
+                sample *= 2;
+            }
+
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sample;
+            InputStream second = getContentResolver().openInputStream(uri);
+            Bitmap bitmap = BitmapFactory.decodeStream(second, null, options);
+            if (second != null) second.close();
+            if (bitmap == null) return null;
+
+            int width = bitmap.getWidth();
+            int height = bitmap.getHeight();
+            int[] pixels = new int[width * height];
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+            bitmap.recycle();
+
+            RGBLuminanceSource source = new RGBLuminanceSource(width, height, pixels);
+            BinaryBitmap binary = new BinaryBitmap(new HybridBinarizer(source));
+            Map<DecodeHintType, Object> hints = new EnumMap<>(DecodeHintType.class);
+            hints.put(DecodeHintType.TRY_HARDER, Boolean.TRUE);
+            return new MultiFormatReader().decode(binary, hints).getText();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void applyQrText(String text) {
+        String origin = null;
+        try {
+            String raw = text.trim();
+            if (raw.startsWith("serchtube://")) {
+                Uri parsed = Uri.parse(raw);
+                origin = normalizeHost(parsed.getQueryParameter("host"));
+            } else if (raw.startsWith("http://") || raw.startsWith("https://")) {
+                URL url = new URL(raw);
+                int port = url.getPort();
+                origin = url.getProtocol() + "://" + url.getHost() + (port > 0 ? ":" + port : "");
+            } else {
+                origin = normalizeHost(raw);
+            }
+        } catch (Exception ignored) {
+        }
+
+        if (origin == null || origin.length() == 0) {
+            Toast.makeText(this, "El QR no contiene una dirección de host válida.", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        prefs.edit().putString(KEY_HOST, origin).apply();
+        Toast.makeText(this, "Conectando a " + origin, Toast.LENGTH_SHORT).show();
+        showWeb(origin);
     }
 
     private void showWeb(String origin) {
@@ -517,6 +685,23 @@ public class MainActivity extends Activity {
             });
             container.addView(hostButton, params);
         }
+
+        Button scanQr = new Button(this);
+        scanQr.setText("Escanear QR del host");
+        scanQr.setAllCaps(false);
+        scanQr.setTextSize(13);
+        scanQr.setTextColor(FG);
+        scanQr.setBackgroundColor(Color.rgb(35, 50, 74));
+        scanQr.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                scanHostQr();
+            }
+        });
+        LinearLayout.LayoutParams scanParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        scanParams.bottomMargin = dp(8);
+        container.addView(scanQr, scanParams);
 
         Button manual = new Button(this);
         manual.setText("Escribir IP manualmente");

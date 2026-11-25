@@ -20,6 +20,11 @@ $classes = Join-Path $work 'classes'
 $dex = Join-Path $work 'dex'
 $keystore = Join-Path $androidDir 'keystore\serchtube.keystore'
 $output = Join-Path $projectDir 'public\SerchTubeRemote.apk'
+$zxingJar = Join-Path $androidDir 'libs\core-3.5.3.jar'
+
+if (-not (Test-Path $zxingJar)) {
+  throw "Falta la librería ZXing en $zxingJar"
+}
 
 Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $gen, $classes, $dex, (Split-Path $keystore), (Split-Path $output) | Out-Null
@@ -41,12 +46,12 @@ $sources = @(
   (Join-Path $androidDir 'src\com\serchtube\remote\MainActivity.java'),
   (Join-Path $gen 'com\serchtube\remote\R.java')
 )
-& (Join-Path $javaHome 'bin\javac.exe') --release 11 -classpath $androidJar -d $classes $sources
+& (Join-Path $javaHome 'bin\javac.exe') --release 11 -classpath "$androidJar;$zxingJar" -d $classes $sources
 if ($LASTEXITCODE -ne 0) { throw 'javac falló' }
 
 Write-Host '4/6 Generando classes.dex...'
 $classFiles = Get-ChildItem $classes -Recurse -Filter '*.class' | ForEach-Object { $_.FullName }
-& (Join-Path $buildTools 'd8.bat') --lib $androidJar --min-api 24 --output $dex $classFiles
+& (Join-Path $buildTools 'd8.bat') --lib $androidJar --min-api 24 --output $dex $classFiles $zxingJar
 if ($LASTEXITCODE -ne 0) { throw 'd8 falló' }
 
 Push-Location $work

@@ -18,6 +18,7 @@ import {
   Pause,
   Play,
   Plus,
+  QrCode,
   RefreshCw,
   Repeat,
   Search,
@@ -81,7 +82,7 @@ function getInitialTheme(): 'light' | 'dark' {
 const WAVE_BARS = [18, 30, 24, 44, 34, 22, 40, 52, 28, 18, 38, 46, 24, 32, 20, 42, 30, 16];
 
 const ANDROID_APK_URL =
-  'https://raw.githubusercontent.com/blooderscrew1-alt/SerchTube-PC/main/public/SerchTubeRemote-1.5.apk';
+  'https://raw.githubusercontent.com/blooderscrew1-alt/SerchTube-PC/main/public/SerchTubeRemote-1.6.apk';
 
 export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   playerState,
@@ -218,7 +219,7 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
     if (result === 'manual') setInstallOpen(true);
   };
 
-  const callApkHost = (method: 'searchAnotherHost' | 'enterHostManually') => {
+  const callApkHost = (method: 'searchAnotherHost' | 'enterHostManually' | 'scanHostQr') => {
     try {
       const bridge = (window as any).SerchTubeHost;
       if (bridge && typeof bridge[method] === 'function') bridge[method]();
@@ -520,6 +521,9 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                     {isApkWrapper && (
                       <>
                         <div className="mr-menu-divider" />
+                        <button type="button" onClick={() => { callApkHost('scanHostQr'); setMenuOpen(false); }}>
+                          <QrCode size={15} /> Escanear QR del host
+                        </button>
                         <button type="button" onClick={() => { callApkHost('searchAnotherHost'); setMenuOpen(false); }}>
                           <RefreshCw size={15} /> Buscar otro host
                         </button>
@@ -678,6 +682,9 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                     {isApkWrapper && (
                       <>
                         <div className="mr-menu-divider" />
+                        <button type="button" onClick={() => { callApkHost('scanHostQr'); setMenuOpen(false); }}>
+                          <QrCode size={15} /> Escanear QR del host
+                        </button>
                         <button type="button" onClick={() => { callApkHost('searchAnotherHost'); setMenuOpen(false); }}>
                           <RefreshCw size={15} /> Buscar otro host
                         </button>
