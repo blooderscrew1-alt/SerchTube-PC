@@ -452,7 +452,6 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
             {queue.map((track, index) => {
               const isCurrent = track.id === current?.id;
               const distance = Math.abs(index - currentIndex);
-              const isFar = distance >= 4;
               const trackTitle = getTrackDisplayTitle(track);
               const trackArtist = getTrackDisplayArtist(track);
               const trackCover = track.thumbnail || (track.id ? `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg` : '');
@@ -461,7 +460,7 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                   key={`${track.id}-${index}`}
                   role="listitem"
                   data-queue-index={index}
-                  className={`mr-track ${isCurrent ? 'is-current' : ''} ${isFar ? 'is-far' : ''} ${dragState?.from === index ? 'is-dragging' : ''} ${dragState?.over === index && dragState.from !== index ? 'is-drop-target' : ''}`}
+                  className={`mr-track ${isCurrent ? 'is-current' : ''} ${dragState?.from === index ? 'is-dragging' : ''} ${dragState?.over === index && dragState.from !== index ? 'is-drop-target' : ''}`}
                   style={{
                     ['--delay' as string]: `${Math.min(index, 10) * 55}ms`,
                     ['--tilt' as string]: `${index % 2 === 0 ? -1.6 : 1.6}deg`,

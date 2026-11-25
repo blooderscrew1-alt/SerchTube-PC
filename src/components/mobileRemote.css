@@ -1469,23 +1469,6 @@
   background: rgba(255, 255, 255, 0.07);
 }
 
-.mr-track.is-far {
-  opacity: 1;
-}
-
-.mr-track.is-far .mr-track-cover,
-.mr-track.is-far .mr-track-copy {
-  opacity: 0.42;
-}
-
-.mr-track.is-far .mr-track-actions {
-  opacity: 1;
-}
-
-.mr-track.is-far .mr-track-cover {
-  filter: grayscale(0.25);
-}
-
 .mr-track:hover {
   opacity: 1;
   background: rgba(255, 255, 255, 0.24);
