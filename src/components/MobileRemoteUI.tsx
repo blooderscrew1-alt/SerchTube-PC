@@ -4,10 +4,13 @@ import {
   Cast,
   ChevronLeft,
   Disc3,
+  Download,
   Home,
   Infinity as InfinityIcon,
   ListMusic,
+  Maximize2,
   Mic,
+  Minimize2,
   Moon,
   MoreHorizontal,
   Music2,
@@ -27,6 +30,7 @@ import {
 } from 'lucide-react';
 import { PlayerState, SystemStatus, Track } from '../types';
 import { getTrackDisplayArtist, getTrackDisplayTitle } from '../utils/queueTracks';
+import { usePWAInstall } from '../hooks/usePWAInstall';
 import './mobileRemote.css';
 
 interface MobileRemoteUIProps {
@@ -105,7 +109,10 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   const [menuOpen, setMenuOpen] = useState(false);
   const [volumeOpen, setVolumeOpen] = useState(false);
   const [scrub, setScrub] = useState<number | null>(null);
+  const [installOpen, setInstallOpen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(() => !!document.fullscreenElement);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const { isInstalled, install, browserName } = usePWAInstall();
 
   const queue = useMemo<Track[]>(() => {
     if (Array.isArray(playlistQueue) && playlistQueue.length > 0) return playlistQueue;
@@ -141,6 +148,55 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
     } catch {}
     document.documentElement.style.colorScheme = theme;
   }, [theme]);
+
+  const requestFullscreen = () => {
+    try {
+      if (document.fullscreenElement) return;
+      const target = document.documentElement as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void> | void;
+      };
+      const result = target.requestFullscreen?.() ?? target.webkitRequestFullscreen?.();
+      if (result && typeof (result as Promise<void>).catch === 'function') {
+        (result as Promise<void>).catch(() => {});
+      }
+    } catch {}
+  };
+
+  const toggleFullscreen = () => {
+    try {
+      if (document.fullscreenElement) {
+        document.exitFullscreen?.().catch(() => {});
+      } else {
+        requestFullscreen();
+      }
+    } catch {}
+  };
+
+  const handleInstall = async () => {
+    const result = await install();
+    if (result === 'manual') setInstallOpen(true);
+  };
+
+  useEffect(() => {
+    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onChange);
+
+    // Los navegadores exigen un gesto del usuario para entrar en fullscreen.
+    // Se intenta en el primer toque para que el mando parezca una app nativa.
+    const onFirstTouch = () => {
+      requestFullscreen();
+      window.removeEventListener('pointerdown', onFirstTouch);
+      window.removeEventListener('keydown', onFirstTouch);
+    };
+    window.addEventListener('pointerdown', onFirstTouch, { once: true });
+    window.addEventListener('keydown', onFirstTouch, { once: true });
+
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      window.removeEventListener('pointerdown', onFirstTouch);
+      window.removeEventListener('keydown', onFirstTouch);
+    };
+  }, []);
 
   useEffect(() => {
     if (screen === 'search') {
@@ -188,6 +244,11 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
               <p className="mr-eyebrow">COLA DE REPRODUCCIÓN</p>
             </div>
             <div className="mr-head-actions">
+              {!isInstalled && (
+                <button type="button" className="mr-icon-btn" aria-label="Instalar aplicación" title="Instalar aplicación" onClick={handleInstall}>
+                  <Download size={18} />
+                </button>
+              )}
               <button type="button" className="mr-icon-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Cambiar tema">
                 {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
               </button>
@@ -212,6 +273,15 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                     <button type="button" onClick={() => { setScreen('search'); setMenuOpen(false); }}>
                       <Search size={15} /> Buscar música
                     </button>
+                    <button type="button" onClick={() => { toggleFullscreen(); setMenuOpen(false); }}>
+                      {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                      {isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'}
+                    </button>
+                    {!isInstalled && (
+                      <button type="button" onClick={() => { handleInstall(); setMenuOpen(false); }}>
+                        <Download size={15} /> Instalar aplicación
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -256,26 +326,30 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                     <strong>{trackTitle}</strong>
                     <span>{trackArtist}</span>
                   </div>
-                  {isCurrent && (
-                    <div className="mr-track-actions">
-                      <button
-                        type="button"
-                        className="mr-mini-btn"
-                        aria-label={`Añadir ${trackTitle} a la cola`}
-                        onClick={(event) => { event.stopPropagation(); onEnqueueTrack(track); }}
-                      >
-                        <Plus size={18} />
-                      </button>
-                      <button
-                        type="button"
-                        className="mr-mini-btn is-primary"
-                        aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
-                        onClick={(event) => { event.stopPropagation(); onTogglePlay(); }}
-                      >
-                        {isPlaying ? <Pause size={17} /> : <Play size={17} className="mr-fill" />}
-                      </button>
-                    </div>
-                  )}
+                  <div className="mr-track-actions">
+                    <button
+                      type="button"
+                      className="mr-mini-btn"
+                      title="Añadir a la cola"
+                      aria-label={`Añadir ${trackTitle} a la cola`}
+                      onClick={(event) => { event.stopPropagation(); onEnqueueTrack(track); }}
+                    >
+                      <Plus size={17} />
+                    </button>
+                    <button
+                      type="button"
+                      className={`mr-mini-btn ${isCurrent ? 'is-primary' : ''}`}
+                      title="Reproducir ahora"
+                      aria-label={isCurrent && isPlaying ? 'Pausar' : `Reproducir ${trackTitle} ahora`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        if (isCurrent) onTogglePlay();
+                        else onSelectTrack(track, index);
+                      }}
+                    >
+                      {isCurrent && isPlaying ? <Pause size={16} /> : <Play size={16} className="mr-fill" />}
+                    </button>
+                  </div>
                 </div>
               );
             })}
@@ -305,6 +379,11 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
               <span>{isConnected ? 'En línea' : 'Sin conexión'}</span>
             </div>
             <div className="mr-head-actions">
+              {!isInstalled && (
+                <button type="button" className="mr-icon-btn" aria-label="Instalar aplicación" title="Instalar aplicación" onClick={handleInstall}>
+                  <Download size={18} />
+                </button>
+              )}
               <button type="button" className="mr-icon-btn" aria-label="Ver cola" onClick={() => setScreen('queue')}>
                 <Cast size={19} />
               </button>
@@ -326,6 +405,15 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                     <button type="button" onClick={() => { setScreen('search'); setMenuOpen(false); }}>
                       <Search size={15} /> Buscar música
                     </button>
+                    <button type="button" onClick={() => { toggleFullscreen(); setMenuOpen(false); }}>
+                      {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+                      {isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'}
+                    </button>
+                    {!isInstalled && (
+                      <button type="button" onClick={() => { handleInstall(); setMenuOpen(false); }}>
+                        <Download size={15} /> Instalar aplicación
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -360,10 +448,11 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
               <button
                 type="button"
                 className="mr-deck-orb mr-deck-orb-right"
-                aria-label="Pausar"
-                onClick={() => { if (isPlaying) onTogglePlay(); }}
+                aria-label="Buscar música"
+                title="Buscar música"
+                onClick={() => setScreen('search')}
               >
-                <Pause size={19} className="mr-fill" />
+                <Search size={19} />
               </button>
             </div>
           </div>
@@ -515,6 +604,22 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
           </div>
         </section>
       </div>
+
+      {installOpen && (
+        <div className="mr-modal-backdrop" onClick={() => setInstallOpen(false)}>
+          <div className="mr-install-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="mr-install-icon"><Download size={22} /></div>
+            <h3>Instalar SerchTube</h3>
+            {browserName === 'safari' ? (
+              <p>Pulsa <strong>Compartir</strong> y elige <strong>Añadir a pantalla de inicio</strong>.</p>
+            ) : (
+              <p>Abre el menú del navegador y elige <strong>Instalar aplicación</strong> o <strong>Añadir a pantalla de inicio</strong>.</p>
+            )}
+            <p className="mr-install-note">Se abrirá sin barra de direcciones, como una app nativa.</p>
+            <button type="button" onClick={() => setInstallOpen(false)}>Entendido</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

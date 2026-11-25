@@ -1872,3 +1872,97 @@
     height: 58px;
   }
 }
+
+/* Instalación PWA y pantalla completa */
+.mr-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 22px;
+  background: rgba(16, 12, 27, 0.42);
+  backdrop-filter: blur(12px);
+  animation: mrPanelIn 0.22s ease both;
+}
+
+.mr-install-modal {
+  width: min(360px, 100%);
+  padding: 24px 22px 18px;
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  border-radius: 28px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #17151d;
+  box-shadow: 0 30px 70px rgba(30, 20, 55, 0.34);
+  text-align: center;
+}
+
+.mr-app[data-theme="dark"] .mr-install-modal {
+  background: rgba(34, 28, 46, 0.98);
+  color: #f8f3ff;
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.mr-install-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 12px;
+  border-radius: 16px;
+  background: #17151d;
+  color: #fff;
+}
+
+.mr-install-modal h3 {
+  margin: 0 0 8px;
+  font-size: 20px;
+  font-weight: 750;
+  letter-spacing: -0.04em;
+}
+
+.mr-install-modal p {
+  margin: 0;
+  color: #777184;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.mr-app[data-theme="dark"] .mr-install-modal p {
+  color: #b9afc9;
+}
+
+.mr-install-modal .mr-install-note {
+  margin-top: 8px;
+  font-size: 11.5px;
+}
+
+.mr-install-modal button {
+  width: 100%;
+  margin-top: 16px;
+  padding: 11px;
+  border: 0;
+  border-radius: 14px;
+  background: #17151d;
+  color: #fff;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mr-app[data-theme="dark"] .mr-install-modal button {
+  background: #f8f3ff;
+  color: #17121f;
+}
+
+html:fullscreen,
+html:fullscreen body {
+  overscroll-behavior: none;
+}
+
+html:fullscreen .mr-app {
+  height: 100dvh;
+}
