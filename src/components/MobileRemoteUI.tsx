@@ -78,6 +78,9 @@ function getInitialTheme(): 'light' | 'dark' {
 
 const WAVE_BARS = [18, 30, 24, 44, 34, 22, 40, 52, 28, 18, 38, 46, 24, 32, 20, 42, 30, 16];
 
+const ANDROID_APK_URL =
+  'https://raw.githubusercontent.com/blooderscrew1-alt/SerchTube-PC/main/public/SerchTubeRemote.apk';
+
 export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   playerState,
   playlistQueue,
@@ -127,6 +130,13 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   const dragStateRef = useRef<{ from: number; over: number } | null>(null);
   dragStateRef.current = dragState;
   const { isInstalled, install, browserName } = usePWAInstall();
+  const isApkWrapper = (() => {
+    try {
+      return new URLSearchParams(window.location.search).get('source') === 'apk';
+    } catch {
+      return false;
+    }
+  })();
 
   const queue = useMemo<Track[]>(() => {
     if (Array.isArray(playlistQueue) && playlistQueue.length > 0) return playlistQueue;
@@ -194,6 +204,14 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   };
 
   const handleInstall = async () => {
+    // En Android se descarga el APK nativo directamente desde GitHub.
+    // El APK busca el host en la red y abre el mando a pantalla completa.
+    if (/android/i.test(navigator.userAgent)) {
+      setInstallOpen(false);
+      window.location.href = ANDROID_APK_URL;
+      return;
+    }
+
     const result = await install();
     if (result === 'manual') setInstallOpen(true);
   };
@@ -452,7 +470,7 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
               <p className="mr-eyebrow">COLA DE REPRODUCCIÓN</p>
             </div>
             <div className="mr-head-actions">
-              {!isInstalled && (
+              {!isInstalled && !isApkWrapper && (
                 <button type="button" className="mr-icon-btn" aria-label="Instalar aplicación" title="Instalar aplicación" onClick={handleInstall}>
                   <Download size={18} />
                 </button>
@@ -485,7 +503,7 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                       {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
                       {isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'}
                     </button>
-                    {!isInstalled && (
+                    {!isInstalled && !isApkWrapper && (
                       <button type="button" onClick={() => { handleInstall(); setMenuOpen(false); }}>
                         <Download size={15} /> Instalar aplicación
                       </button>
@@ -602,7 +620,7 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
               <span>{isConnected ? 'En línea' : 'Sin conexión'}</span>
             </div>
             <div className="mr-head-actions">
-              {!isInstalled && (
+              {!isInstalled && !isApkWrapper && (
                 <button type="button" className="mr-icon-btn" aria-label="Instalar aplicación" title="Instalar aplicación" onClick={handleInstall}>
                   <Download size={18} />
                 </button>
@@ -632,7 +650,7 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                       {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
                       {isFullscreen ? 'Salir de pantalla completa' : 'Pantalla completa'}
                     </button>
-                    {!isInstalled && (
+                    {!isInstalled && !isApkWrapper && (
                       <button type="button" onClick={() => { handleInstall(); setMenuOpen(false); }}>
                         <Download size={15} /> Instalar aplicación
                       </button>

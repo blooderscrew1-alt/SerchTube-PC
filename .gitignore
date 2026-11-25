@@ -14,3 +14,6 @@ __pycache__/
 logs/
 # Version de GitHub aplicada por "Actualizar SerchTube.bat"
 .version-remota.txt
+
+# Firma Android
+*.idsig
