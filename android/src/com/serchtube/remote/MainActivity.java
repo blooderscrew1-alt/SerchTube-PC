@@ -62,8 +62,7 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     prefs.edit().remove(KEY_HOST).apply();
-                    showSetup("Buscando SerchTube en tu red local…", true);
-                    discoverHost();
+                    discoverHosts(false, null);
                 }
             });
         }
@@ -88,11 +87,31 @@ public class MainActivity extends Activity {
 
         String saved = prefs.getString(KEY_HOST, "");
         if (saved != null && saved.length() > 0) {
-            showWeb(saved);
+            checkSavedHost(saved);
         } else {
-            showSetup("Buscando SerchTube en tu red local…", true);
-            discoverHost();
+            discoverHosts(true, null);
         }
+    }
+
+    /** Primer arranque con host guardado: probarlo antes de escanear toda la red. */
+    private void checkSavedHost(final String saved) {
+        showSetup("Conectando al último host conocido…", true);
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final boolean reachable = probeOrigin(saved);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (reachable) {
+                            showWeb(saved);
+                        } else {
+                            discoverHosts(true, null);
+                        }
+                    }
+                });
+            }
+        }).start();
     }
 
     private int dp(int value) {
@@ -230,7 +249,7 @@ public class MainActivity extends Activity {
             @Override
             public void onClick(View v) {
                 showSetup("Buscando SerchTube en tu red local…", true);
-                discoverHost();
+                discoverHosts(true, null);
             }
         });
     }
@@ -286,54 +305,77 @@ public class MainActivity extends Activity {
         setContentView(webView);
     }
 
-    private void discoverHost() {
+    /**
+     * Escanea la red. Si autoConnect=true conecta al primer host disponible;
+     * si es false muestra la lista para que el usuario elija.
+     */
+    private void discoverHosts(final boolean autoConnect, final String preferredOrigin) {
+        showSetup("Buscando hosts de SerchTube en tu red…", true);
+
         final String localIp = getLocalIp();
-        if (localIp == null) {
+        if (localIp == null && preferredOrigin == null) {
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    showSetup("No encontré una red Wi-Fi. Escribe la IP del host manualmente.", false);
+                    if (autoConnect) {
+                        showSetup("No encontré una red Wi-Fi. Escribe la IP del host manualmente.", false);
+                    } else {
+                        showHostList(new ArrayList<String>(), "No encontré una red Wi-Fi. Revisa la conexión Wi‑Fi.");
+                    }
                 }
             });
             return;
         }
 
-        final String base = localIp.substring(0, localIp.lastIndexOf('.') + 1);
         new Thread(new Runnable() {
             @Override
             public void run() {
-                ExecutorService pool = Executors.newFixedThreadPool(32);
-                List<Future<String>> futures = new ArrayList<>();
-                for (int i = 1; i <= 254; i++) {
-                    final String candidate = base + i;
-                    futures.add(pool.submit(new Callable<String>() {
-                        @Override
-                        public String call() {
-                            return probe(candidate) ? candidate : null;
-                        }
-                    }));
+                final List<String> found = new ArrayList<>();
+
+                if (preferredOrigin != null && probeOrigin(preferredOrigin) && !found.contains(preferredOrigin)) {
+                    found.add(preferredOrigin);
                 }
 
-                String found = null;
-                for (Future<String> future : futures) {
-                    try {
-                        String result = future.get(1400, TimeUnit.MILLISECONDS);
-                        if (result != null && found == null) found = result;
-                    } catch (Exception ignored) {
+                if (localIp != null) {
+                    final String base = localIp.substring(0, localIp.lastIndexOf('.') + 1);
+                    ExecutorService pool = Executors.newFixedThreadPool(32);
+                    List<Future<String>> futures = new ArrayList<>();
+                    for (int i = 1; i <= 254; i++) {
+                        final String candidate = base + i;
+                        futures.add(pool.submit(new Callable<String>() {
+                            @Override
+                            public String call() {
+                                return probe(candidate) ? "http://" + candidate + ":" + PORT : null;
+                            }
+                        }));
                     }
-                }
-                pool.shutdownNow();
 
-                final String host = found;
+                    for (Future<String> future : futures) {
+                        try {
+                            String result = future.get(1400, TimeUnit.MILLISECONDS);
+                            if (result != null && !found.contains(result)) found.add(result);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    pool.shutdownNow();
+                }
+
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        if (host != null) {
-                            String origin = "http://" + host + ":" + PORT;
-                            prefs.edit().putString(KEY_HOST, origin).apply();
-                            showWeb(origin);
+                        if (autoConnect) {
+                            if (!found.isEmpty()) {
+                                String origin = found.get(0);
+                                prefs.edit().putString(KEY_HOST, origin).apply();
+                                showWeb(origin);
+                            } else {
+                                showSetup("No pude encontrar el host automáticamente. Escribe su IP.", false);
+                            }
                         } else {
-                            showSetup("No pude encontrar el host automáticamente. Escribe su IP.", false);
+                            String message = found.isEmpty()
+                                    ? "No encontré ningún host de SerchTube en esta red."
+                                    : "Toca el host al que quieres conectarte.";
+                            showHostList(found, message);
                         }
                     }
                 });
@@ -341,10 +383,113 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    /** Lista de hosts encontrados; no conecta hasta que el usuario toca uno. */
+    private void showHostList(List<String> hosts, String message) {
+        if (webView != null) {
+            View parent = (View) webView.getParent();
+            if (parent instanceof ViewGroup) {
+                ((ViewGroup) parent).removeView(webView);
+            }
+            webView.destroy();
+            webView = null;
+        }
+
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setBackgroundColor(BG);
+        container.setPadding(dp(24), dp(34), dp(24), dp(24));
+
+        TextView title = new TextView(this);
+        title.setText("Hosts disponibles");
+        title.setTextColor(FG);
+        title.setTextSize(27);
+        title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
+        container.addView(title);
+
+        TextView info = new TextView(this);
+        info.setText(message);
+        info.setTextColor(MUTED);
+        info.setTextSize(13);
+        info.setPadding(0, dp(8), 0, dp(18));
+        container.addView(info);
+
+        final String saved = prefs.getString(KEY_HOST, "");
+        for (final String origin : hosts) {
+            Button hostButton = new Button(this);
+            String label = origin;
+            if (saved != null && saved.equals(origin)) label += "   · último usado";
+            hostButton.setText(label);
+            hostButton.setAllCaps(false);
+            hostButton.setTextSize(13);
+            hostButton.setTextColor(FG);
+            hostButton.setBackgroundColor(Color.rgb(35, 50, 74));
+            hostButton.setPadding(dp(12), dp(10), dp(12), dp(10));
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            params.bottomMargin = dp(8);
+            hostButton.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    prefs.edit().putString(KEY_HOST, origin).apply();
+                    showWeb(origin);
+                }
+            });
+            container.addView(hostButton, params);
+        }
+
+        Button manual = new Button(this);
+        manual.setText("Escribir IP manualmente");
+        manual.setAllCaps(false);
+        manual.setTextSize(13);
+        manual.setTextColor(FG);
+        manual.setBackgroundColor(Color.rgb(55, 45, 72));
+        manual.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                showSetup("Escribe la dirección del host de SerchTube.", false);
+            }
+        });
+        container.addView(manual);
+
+        Button rescan = new Button(this);
+        rescan.setText("Volver a buscar");
+        rescan.setAllCaps(false);
+        rescan.setTextSize(12);
+        rescan.setTextColor(MUTED);
+        rescan.setBackgroundColor(Color.TRANSPARENT);
+        rescan.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                discoverHosts(false, null);
+            }
+        });
+        container.addView(rescan);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(BG);
+        scroll.addView(container);
+        setContentView(scroll);
+    }
+
     private boolean probe(String ip) {
+        return probeUrl("http://" + ip + ":" + PORT + "/manifest.json");
+    }
+
+    private boolean probeOrigin(String origin) {
+        try {
+            URL url = new URL(origin);
+            int port = url.getPort() == -1 ? PORT : url.getPort();
+            String base = url.getProtocol() + "://" + url.getHost() + ":" + port + "/manifest.json";
+            return probeUrl(base);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean probeUrl(String urlString) {
         HttpURLConnection connection = null;
         try {
-            URL url = new URL("http://" + ip + ":" + PORT + "/manifest.json");
+            URL url = new URL(urlString);
             connection = (HttpURLConnection) url.openConnection();
             connection.setConnectTimeout(320);
             connection.setReadTimeout(320);
