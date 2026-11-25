@@ -236,7 +236,7 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
       if (!document.fullscreenElement) requestFullscreen();
     };
 
-    const gestureEvents = ['pointerdown', 'touchstart', 'click', 'keydown'] as const;
+    const gestureEvents = ['pointerdown', 'pointerup', 'touchstart', 'touchend', 'mousedown', 'mouseup', 'click', 'keydown'] as const;
     const onGesture = () => tryEnterFullscreen();
 
     const stopGestureListeners = () => {
@@ -246,7 +246,8 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
     };
 
     // Intentos automáticos al arrancar (el navegador puede rechazarlos hasta
-    // que exista un gesto) y en cada gesto hasta lograrlo.
+    // que exista un gesto) y en cada gesto hasta lograrlo. Sin límite de tiempo:
+    // si el usuario tarda en tocar, el primer toque igual entra en fullscreen.
     const bootTimers = [
       window.setTimeout(tryEnterFullscreen, 350),
       window.setTimeout(tryEnterFullscreen, 1200)
@@ -254,26 +255,33 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
     gestureEvents.forEach(eventName => {
       window.addEventListener(eventName, onGesture, { capture: true, passive: true });
     });
-    const gestureTimeout = window.setTimeout(stopGestureListeners, 20000);
 
     const onFullscreenForGestures = () => {
       if (document.fullscreenElement) {
         stopGestureListeners();
-        window.clearTimeout(gestureTimeout);
       }
+    };
+
+    const onVisibleAgain = () => {
+      if (document.visibilityState === 'visible') tryEnterFullscreen();
     };
 
     document.addEventListener('fullscreenchange', onChange);
     document.addEventListener('fullscreenchange', onFullscreenForGestures);
     window.addEventListener('popstate', onPopState);
+    window.addEventListener('focus', tryEnterFullscreen);
+    window.addEventListener('pageshow', tryEnterFullscreen);
+    document.addEventListener('visibilitychange', onVisibleAgain);
 
     return () => {
       bootTimers.forEach(timer => window.clearTimeout(timer));
-      window.clearTimeout(gestureTimeout);
       stopGestureListeners();
       document.removeEventListener('fullscreenchange', onChange);
       document.removeEventListener('fullscreenchange', onFullscreenForGestures);
       window.removeEventListener('popstate', onPopState);
+      window.removeEventListener('focus', tryEnterFullscreen);
+      window.removeEventListener('pageshow', tryEnterFullscreen);
+      document.removeEventListener('visibilitychange', onVisibleAgain);
     };
   }, []);
 
