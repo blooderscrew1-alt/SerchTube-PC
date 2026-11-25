@@ -387,8 +387,9 @@ export class NodeSyncService {
       rawList.push(currentTrack);
     }
 
-    // Ensure strictly up to 20 tracks
-    const formattedQueue = rawList.slice(0, 20).map((t, idx) => {
+    // La cola viaja completa (hasta 200) para que el mando móvil pueda verla
+    // entera y reordenarla; antes se cortaba en 20 y lo añadido al final no aparecía.
+    const formattedQueue = rawList.slice(0, 200).map((t, idx) => {
       const cleaned = cleanQueueTrack(t);
       const id = cleaned.id || '';
       const thumbnail = cleaned.thumbnail && !cleaned.thumbnail.includes('unsplash')
@@ -524,6 +525,10 @@ export class NodeSyncService {
       tracks: Array.isArray(command.tracks) ? command.tracks : undefined,
       track: command.track,
       positionMode: command.positionMode,
+      fromIndex: command.fromIndex,
+      toIndex: command.toIndex,
+      trackId: command.trackId,
+      targetId: command.targetId,
       thumbnail: command.thumbnail,
       duration: command.duration,
       nodeId: this.config.nodeId,

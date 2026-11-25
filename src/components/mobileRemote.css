@@ -1423,7 +1423,50 @@
   border-radius: 26px;
   animation: none;
   opacity: 1;
-  transition: opacity 0.3s ease, transform 0.22s ease, background 0.22s ease;
+  touch-action: pan-y;
+  transition: opacity 0.3s ease, transform 0.22s ease, background 0.22s ease, box-shadow 0.22s ease;
+}
+
+.mr-app.is-dragging-queue .mr-track {
+  touch-action: none;
+}
+
+.mr-app.is-dragging-queue .mr-queue-list {
+  overscroll-behavior: contain;
+}
+
+.mr-track.is-dragging {
+  z-index: 6;
+  opacity: 0.82;
+  background: var(--pill);
+  box-shadow: 0 24px 45px rgba(45, 30, 80, 0.24);
+  transform: scale(1.025);
+  transition: none;
+}
+
+.mr-track.is-dragging .mr-track-cover {
+  filter: grayscale(0.15) brightness(0.92);
+}
+
+.mr-track.is-drop-target {
+  position: relative;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.mr-track.is-drop-target::before {
+  content: "";
+  position: absolute;
+  top: -3px;
+  left: 18px;
+  right: 18px;
+  height: 3px;
+  border-radius: 999px;
+  background: var(--text);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--text) 40%, transparent);
+}
+
+.mr-app[data-theme="dark"] .mr-track.is-drop-target {
+  background: rgba(255, 255, 255, 0.07);
 }
 
 .mr-track.is-far {

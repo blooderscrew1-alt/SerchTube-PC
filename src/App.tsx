@@ -298,8 +298,10 @@ export default function App() {
     return false;
   };
 
-  // Build upcoming 20 songs queue helper (index 0 is current song playing, with real thumbnail and title)
+  // Build synchronization queue (index 0 is current song; se envía completa
+  // para que el mando pueda ver y reordenar toda la lista).
   const getUpcomingQueue = useCallback((): Track[] => {
+    const MAX_SYNC_QUEUE = 200;
     const list: Track[] = [];
     const seen = new Set<string>();
     const seenKeys = new Set<string>();
@@ -325,7 +327,7 @@ export default function App() {
     if (Array.isArray(q) && q.length > 0) {
       const start = pIdx >= 0 ? pIdx + 1 : 1;
       for (let i = start; i < q.length; i++) {
-        if (list.length >= 20) break;
+        if (list.length >= MAX_SYNC_QUEUE) break;
         const rawT = q[i];
         if (!rawT || !rawT.id || !isValidTrackTitleClient(rawT.title)) continue;
         const t = sanitizeTrackClient(rawT);
@@ -348,9 +350,9 @@ export default function App() {
         });
       }
 
-      if (list.length < 20) {
+      if (list.length < MAX_SYNC_QUEUE) {
         for (let i = 0; i < Math.min(start - 1, q.length); i++) {
-          if (list.length >= 20) break;
+          if (list.length >= MAX_SYNC_QUEUE) break;
           const rawT = q[i];
           if (!rawT || !rawT.id || !isValidTrackTitleClient(rawT.title)) continue;
           const t = sanitizeTrackClient(rawT);
@@ -3811,6 +3813,60 @@ export default function App() {
     );
   }, []);
 
+  // Reordenar la cola desde el mando móvil (manteniendo la canción actual)
+  const handleReorderQueue = useCallback((fromIndex: number, toIndex: number, trackId?: string, targetId?: string) => {
+    const queue = playlistQueueRef.current || [];
+    let from = Math.trunc(fromIndex);
+    let to = Math.trunc(toIndex);
+    if (trackId) {
+      const byId = queue.findIndex(t => t.id === trackId);
+      if (byId >= 0) from = byId;
+    }
+    if (targetId) {
+      const byTarget = queue.findIndex(t => t.id === targetId);
+      if (byTarget >= 0) to = byTarget;
+    }
+    if (!Number.isFinite(from) || !Number.isFinite(to)) return;
+    if (from < 0 || from >= queue.length || to < 0 || to >= queue.length || from === to) return;
+
+    const movedTrackId = queue[from]?.id;
+    const targetTrackId = queue[to]?.id;
+    const updated = [...queue];
+    const [moved] = updated.splice(from, 1);
+    if (!moved) return;
+    updated.splice(to, 0, moved);
+
+    const currentId = playerStateRef.current.currentTrack?.id;
+    const newIndex = currentId
+      ? Math.max(0, updated.findIndex(t => t.id === currentId))
+      : Math.min(playlistIndexRef.current, Math.max(0, updated.length - 1));
+
+    playlistQueueRef.current = updated;
+    playlistIndexRef.current = newIndex;
+    setPlaylistQueue(updated);
+    setPlaylistIndex(newIndex);
+    try {
+      localStorage.setItem('serchtube_playlist_queue', JSON.stringify(updated));
+      localStorage.setItem('serchtube_playlist_index', String(newIndex));
+    } catch {}
+
+    if (nodeRoleRef.current === 'satellite') {
+      NodeSyncService.getInstance().sendCommandToMaster({
+        action: 'reorder_queue',
+        fromIndex: from,
+        toIndex: to,
+        trackId: movedTrackId,
+        targetId: targetTrackId
+      });
+    } else {
+      NodeSyncService.getInstance().broadcastMasterState(
+        playerStateRef.current,
+        getUpcomingQueueRef.current()
+      );
+    }
+    AudioEngine.getInstance().playBeep('neutral');
+  }, []);
+
   // Formar a la cola a partir de búsqueda por texto / enlace
   const handleEnqueueQuery = useCallback(async (query: string, positionMode: 'next' | 'end' = 'end') => {
     if (nodeRoleRef.current === 'satellite') {
@@ -3888,6 +3944,15 @@ export default function App() {
     }
 
     switch (evt.event) {
+      case 'REORDER_QUEUE': {
+        handleReorderQueue(
+          Number(evt.fromIndex),
+          Number(evt.toIndex),
+          typeof evt.trackId === 'string' ? evt.trackId : undefined,
+          typeof evt.targetId === 'string' ? evt.targetId : undefined
+        );
+        break;
+      }
       case 'ENQUEUE':
       case 'ADD_TO_QUEUE': {
         const positionMode = evt.positionMode || 'end';
@@ -4646,6 +4711,7 @@ export default function App() {
         }}
         onSelectTrack={handleSelectTrackFromQueue}
         onEnqueueTrack={(track) => handleEnqueueTracks(track, 'end')}
+        onReorderQueue={handleReorderQueue}
         onVolumeChange={(newVol) => {
           const safeVol = Math.max(0, Math.min(15, newVol));
           playerStateRef.current = { ...playerStateRef.current, volume: safeVol, isMuted: false };

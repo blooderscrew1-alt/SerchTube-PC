@@ -49,6 +49,7 @@ export type IntentType =
   | 'FULLSCREEN_TOGGLE'
   | 'SHOW_QR'
   | 'ENQUEUE'
+  | 'REORDER_QUEUE'
   | 'SCREENSAVER_START'
   | 'SCREENSAVER_STOP'
   | 'UNKNOWN';
@@ -62,6 +63,10 @@ export interface ResolvedIntent {
   offset?: number;
   quality?: string;
   speed?: number;
+  fromIndex?: number;
+  toIndex?: number;
+  trackId?: string;
+  targetId?: string;
   originalAction?: string;
   rawText?: string;
   confidence?: number;
@@ -83,6 +88,10 @@ export interface PlayerBrowserEvent {
   seekTime?: number;
   position?: number;
   offset?: number;
+  fromIndex?: number;
+  toIndex?: number;
+  trackId?: string;
+  targetId?: string;
   quality?: string;
   playbackQuality?: string;
   speed?: number;
@@ -422,6 +431,28 @@ export function resolveIntent(payload: IncomingSatellitePayload): ResolvedIntent
 
   const lowerText = rawText.toLowerCase();
   const lowerAction = originalAction.toLowerCase();
+
+  // Reordenar la cola desde el mando móvil (arrastrar una canción).
+  if (['reorder_queue', 'queue_reorder', 'move_track', 'move_queue'].includes(lowerAction)) {
+    const anyPayload = payload as any;
+    const fromCandidate =
+      anyPayload.fromIndex ?? anyPayload.payload?.fromIndex ?? anyPayload.command?.fromIndex ?? anyPayload.payload?.payload?.fromIndex;
+    const toCandidate =
+      anyPayload.toIndex ?? anyPayload.payload?.toIndex ?? anyPayload.command?.toIndex ?? anyPayload.payload?.payload?.toIndex;
+    const fromIndex = Number(fromCandidate);
+    const toIndex = Number(toCandidate);
+    const trackId = anyPayload.trackId ?? anyPayload.payload?.trackId ?? anyPayload.command?.trackId;
+    const targetId = anyPayload.targetId ?? anyPayload.payload?.targetId ?? anyPayload.command?.targetId;
+    return {
+      intent: 'REORDER_QUEUE',
+      fromIndex: Number.isFinite(fromIndex) ? fromIndex : undefined,
+      toIndex: Number.isFinite(toIndex) ? toIndex : undefined,
+      trackId: trackId ? String(trackId) : undefined,
+      targetId: targetId ? String(targetId) : undefined,
+      originalAction: originalAction || 'reorder_queue',
+      rawText
+    };
+  }
 
   // 0. ENQUEUE / AGREGAR O FORMAR A LA COLA
   if (
@@ -1155,7 +1186,7 @@ export class CommandDispatcher {
     // ENQUEUE / AGREGAR A LA COLA NUNCA participa en el arbitraje de turnos:
     // añadir una canción no interrumpe la reproducción y el usuario puede
     // encolar varias seguidas sin que las órdenes se descarten entre sí.
-    const isQueueControl = resolved.intent === 'ENQUEUE';
+    const isQueueControl = resolved.intent === 'ENQUEUE' || resolved.intent === 'REORDER_QUEUE';
 
     // 🎙️ master_mic_active: La PC Host notificó que abrió su micrófono (localmente o por voz)
     if (
@@ -1400,6 +1431,27 @@ export class CommandDispatcher {
             room
           });
         }
+        break;
+      }
+
+      case 'REORDER_QUEUE': {
+        this.dispatchToBrowserPlayer(room, {
+          event: 'REORDER_QUEUE',
+          fromIndex: resolved.fromIndex,
+          toIndex: resolved.toIndex,
+          trackId: resolved.trackId,
+          targetId: resolved.targetId,
+          nodeId,
+          fromNode: nodeName,
+          timestamp: Date.now()
+        }, clientsMap, broadcastToRoom);
+        this.sendAck(senderWs, {
+          type: 'command_ack',
+          success: true,
+          message: 'Cola reordenada',
+          nodeId,
+          room
+        });
         break;
       }
 

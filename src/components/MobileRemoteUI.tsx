@@ -46,6 +46,7 @@ interface MobileRemoteUIProps {
   onSeek: (time: number) => void;
   onSelectTrack: (track: Track, index: number) => void;
   onEnqueueTrack: (track: Track) => void;
+  onReorderQueue: (fromIndex: number, toIndex: number) => void;
   onVolumeChange: (volume: number) => void;
   onToggleMute: () => void;
   onToggleRepeat: () => void;
@@ -90,6 +91,7 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   onSeek,
   onSelectTrack,
   onEnqueueTrack,
+  onReorderQueue,
   onVolumeChange,
   onToggleMute,
   onToggleRepeat,
@@ -111,8 +113,14 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
   const [scrub, setScrub] = useState<number | null>(null);
   const [installOpen, setInstallOpen] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(() => !!document.fullscreenElement);
+  const [dragState, setDragState] = useState<{ from: number; over: number } | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const fullscreenHistoryRef = useRef(false);
+  const longPressRef = useRef<number | null>(null);
+  const dragStartRef = useRef<{ x: number; y: number; index: number; pointerId: number; element: HTMLElement } | null>(null);
+  const suppressClickRef = useRef(false);
+  const dragStateRef = useRef<{ from: number; over: number } | null>(null);
+  dragStateRef.current = dragState;
   const { isInstalled, install, browserName } = usePWAInstall();
 
   const queue = useMemo<Track[]>(() => {
@@ -294,8 +302,82 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
     setScrub(null);
   };
 
+  const clearLongPress = () => {
+    if (longPressRef.current !== null) {
+      window.clearTimeout(longPressRef.current);
+      longPressRef.current = null;
+    }
+  };
+
+  const endDrag = (commit: boolean) => {
+    clearLongPress();
+    const drag = dragStateRef.current;
+    if (commit && drag && drag.from !== drag.over) {
+      onReorderQueue(drag.from, drag.over);
+    }
+    if (drag) {
+      suppressClickRef.current = true;
+      window.setTimeout(() => { suppressClickRef.current = false; }, 280);
+    }
+    dragStartRef.current = null;
+    setDragState(null);
+  };
+
+  const onQueuePointerDown = (event: React.PointerEvent<HTMLDivElement>, index: number) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    if ((event.target as HTMLElement).closest('button')) return;
+
+    clearLongPress();
+    dragStartRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      index,
+      pointerId: event.pointerId,
+      element: event.currentTarget
+    };
+    const start = dragStartRef.current;
+    longPressRef.current = window.setTimeout(() => {
+      setDragState({ from: index, over: index });
+      suppressClickRef.current = true;
+      try { start.element.setPointerCapture(start.pointerId); } catch {}
+      try { navigator.vibrate?.(12); } catch {}
+    }, 380);
+  };
+
+  const onQueuePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    const start = dragStartRef.current;
+    if (!start) return;
+    if (!dragStateRef.current) {
+      if (Math.hypot(event.clientX - start.x, event.clientY - start.y) > 8) {
+        clearLongPress();
+      }
+      return;
+    }
+    event.preventDefault();
+    const element = document.elementFromPoint(event.clientX, event.clientY) as HTMLElement | null;
+    const row = element?.closest('[data-queue-index]') as HTMLElement | null;
+    const over = Number(row?.dataset.queueIndex);
+    if (Number.isInteger(over)) {
+      setDragState(prev => (prev && prev.over !== over ? { ...prev, over } : prev));
+    }
+  };
+
+  const onQueuePointerUp = () => endDrag(true);
+  const onQueuePointerCancel = () => endDrag(false);
+
+  useEffect(() => () => clearLongPress(), []);
+
+  useEffect(() => {
+    if (!dragState) return undefined;
+    const preventScroll = (event: TouchEvent) => {
+      if (event.cancelable) event.preventDefault();
+    };
+    document.addEventListener('touchmove', preventScroll, { passive: false });
+    return () => document.removeEventListener('touchmove', preventScroll);
+  }, [dragState]);
+
   return (
-    <div className="mr-app" data-theme={theme}>
+    <div className={`mr-app ${dragState ? 'is-dragging-queue' : ''}`} data-theme={theme}>
       <div className="mr-ambient" aria-hidden="true">
         <span className="mr-blob mr-blob-a" />
         <span className="mr-blob mr-blob-b" />
@@ -351,6 +433,9 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                   </div>
                 )}
               </div>
+              <button type="button" className="mr-icon-btn" aria-label="Cerrar cola" title="Cerrar cola" onClick={() => setScreen('player')}>
+                <X size={19} />
+              </button>
             </div>
           </header>
 
@@ -375,14 +460,27 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                 <div
                   key={`${track.id}-${index}`}
                   role="listitem"
-                  className={`mr-track ${isCurrent ? 'is-current' : ''} ${isFar ? 'is-far' : ''}`}
+                  data-queue-index={index}
+                  className={`mr-track ${isCurrent ? 'is-current' : ''} ${isFar ? 'is-far' : ''} ${dragState?.from === index ? 'is-dragging' : ''} ${dragState?.over === index && dragState.from !== index ? 'is-drop-target' : ''}`}
                   style={{
                     ['--delay' as string]: `${Math.min(index, 10) * 55}ms`,
                     ['--tilt' as string]: `${index % 2 === 0 ? -1.6 : 1.6}deg`,
                     ['--shift' as string]: `${isCurrent ? 0 : (index % 3) * 9}px`,
                     ['--cover-scale' as string]: isCurrent ? '1.16' : `${Math.max(0.78, 1 - distance * 0.055)}`
                   }}
-                  onClick={() => onSelectTrack(track, index)}
+                  onPointerDown={(event) => onQueuePointerDown(event, index)}
+                  onPointerMove={onQueuePointerMove}
+                  onPointerUp={onQueuePointerUp}
+                  onPointerCancel={onQueuePointerCancel}
+                  onContextMenu={(event) => event.preventDefault()}
+                  onClick={(event) => {
+                    if (suppressClickRef.current) {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      return;
+                    }
+                    onSelectTrack(track, index);
+                  }}
                 >
                   <div className="mr-track-cover">
                     {trackCover ? <img src={trackCover} alt="" loading="lazy" referrerPolicy="no-referrer" /> : <Music2 size={20} />}
