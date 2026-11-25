@@ -1,7 +1,10 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Bookmark,
+  Cast,
   ChevronLeft,
   Disc3,
+  Home,
   Infinity as InfinityIcon,
   ListMusic,
   Mic,
@@ -183,7 +186,6 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
           <header className="mr-queue-head">
             <div>
               <p className="mr-eyebrow">COLA DE REPRODUCCIÓN</p>
-              <p className="mr-subtle">{queue.length} {queue.length === 1 ? 'canción' : 'canciones'}</p>
             </div>
             <div className="mr-head-actions">
               <button type="button" className="mr-icon-btn" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} aria-label="Cambiar tema">
@@ -228,6 +230,8 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
 
             {queue.map((track, index) => {
               const isCurrent = track.id === current?.id;
+              const distance = Math.abs(index - currentIndex);
+              const isFar = distance >= 4;
               const trackTitle = getTrackDisplayTitle(track);
               const trackArtist = getTrackDisplayArtist(track);
               const trackCover = track.thumbnail || (track.id ? `https://i.ytimg.com/vi/${track.id}/hqdefault.jpg` : '');
@@ -235,8 +239,13 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                 <div
                   key={`${track.id}-${index}`}
                   role="listitem"
-                  className={`mr-track ${isCurrent ? 'is-current' : ''}`}
-                  style={{ ['--delay' as string]: `${Math.min(index, 10) * 55}ms`, ['--tilt' as string]: `${index % 2 === 0 ? -1.6 : 1.6}deg` }}
+                  className={`mr-track ${isCurrent ? 'is-current' : ''} ${isFar ? 'is-far' : ''}`}
+                  style={{
+                    ['--delay' as string]: `${Math.min(index, 10) * 55}ms`,
+                    ['--tilt' as string]: `${index % 2 === 0 ? -1.6 : 1.6}deg`,
+                    ['--shift' as string]: `${isCurrent ? 0 : (index % 3) * 9}px`,
+                    ['--cover-scale' as string]: isCurrent ? '1.16' : `${Math.max(0.78, 1 - distance * 0.055)}`
+                  }}
                   onClick={() => onSelectTrack(track, index)}
                 >
                   <div className="mr-track-cover">
@@ -247,39 +256,42 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                     <strong>{trackTitle}</strong>
                     <span>{trackArtist}</span>
                   </div>
-                  <div className="mr-track-actions">
-                    {!isCurrent && (
+                  {isCurrent && (
+                    <div className="mr-track-actions">
                       <button
                         type="button"
                         className="mr-mini-btn"
                         aria-label={`Añadir ${trackTitle} a la cola`}
                         onClick={(event) => { event.stopPropagation(); onEnqueueTrack(track); }}
                       >
-                        <Plus size={17} />
+                        <Plus size={18} />
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      className={`mr-mini-btn ${isCurrent ? 'is-primary' : ''}`}
-                      aria-label={isCurrent && isPlaying ? 'Pausar' : 'Reproducir'}
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        if (isCurrent) onTogglePlay();
-                        else onSelectTrack(track, index);
-                      }}
-                    >
-                      {isCurrent && isPlaying ? <Pause size={16} /> : <Play size={16} className="mr-fill" />}
-                    </button>
-                  </div>
+                      <button
+                        type="button"
+                        className="mr-mini-btn is-primary"
+                        aria-label={isPlaying ? 'Pausar' : 'Reproducir'}
+                        onClick={(event) => { event.stopPropagation(); onTogglePlay(); }}
+                      >
+                        {isPlaying ? <Pause size={17} /> : <Play size={17} className="mr-fill" />}
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
 
-          <footer className="mr-queue-foot">
-            <span className={`mr-status-dot ${isConnected ? 'is-online' : ''}`} />
-            {isConnected ? 'Sincronizado con el host' : 'Reconectando con el host'}
-          </footer>
+          <nav className="mr-dock" aria-label="Navegación del mando">
+            <button type="button" className={screen === 'queue' ? 'is-active' : ''} onClick={() => setScreen('queue')} aria-label="Cola">
+              <Home size={19} />
+            </button>
+            <button type="button" className={screen === 'search' ? 'is-active' : ''} onClick={() => setScreen('search')} aria-label="Buscar">
+              <Search size={20} />
+            </button>
+            <button type="button" className={screen === 'player' ? 'is-active' : ''} onClick={() => setScreen('player')} aria-label="Reproductor">
+              <Bookmark size={19} />
+            </button>
+          </nav>
         </section>
 
         {/* ─────────────────────── REPRODUCTOR ─────────────────────── */}
@@ -292,9 +304,32 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
               {isConnected ? <Wifi size={13} /> : <WifiOff size={13} />}
               <span>{isConnected ? 'En línea' : 'Sin conexión'}</span>
             </div>
-            <button type="button" className="mr-icon-btn" aria-label="Cambiar tema" onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
-              {theme === 'dark' ? <Sun size={19} /> : <Moon size={19} />}
-            </button>
+            <div className="mr-head-actions">
+              <button type="button" className="mr-icon-btn" aria-label="Ver cola" onClick={() => setScreen('queue')}>
+                <Cast size={19} />
+              </button>
+              <div className="mr-menu-wrap">
+                <button
+                  type="button"
+                  className="mr-icon-btn"
+                  aria-label="Más opciones"
+                  onClick={(event) => { event.stopPropagation(); setMenuOpen(open => !open); }}
+                >
+                  <MoreHorizontal size={20} />
+                </button>
+                {menuOpen && (
+                  <div className="mr-menu" onPointerDown={event => event.stopPropagation()}>
+                    <button type="button" onClick={() => { setTheme(theme === 'dark' ? 'light' : 'dark'); setMenuOpen(false); }}>
+                      {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
+                      {theme === 'dark' ? 'Modo claro' : 'Modo oscuro'}
+                    </button>
+                    <button type="button" onClick={() => { setScreen('search'); setMenuOpen(false); }}>
+                      <Search size={15} /> Buscar música
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
           </header>
 
           <div className={`mr-deck ${isPlaying ? 'is-playing' : ''}`}>
@@ -319,17 +354,17 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                 </div>
               </div>
 
-              <div className="mr-deck-transport">
-                <button type="button" className="mr-deck-side" aria-label="Anterior" onClick={onPreviousTrack}>
-                  <SkipBack size={17} />
-                </button>
-                <button type="button" className="mr-deck-play" aria-label={isPlaying ? 'Pausar' : 'Reproducir'} onClick={onTogglePlay}>
-                  {isPlaying ? <Pause size={24} className="mr-fill" /> : <Play size={24} className="mr-fill" />}
-                </button>
-                <button type="button" className="mr-deck-side" aria-label="Siguiente" onClick={onNextTrack}>
-                  <SkipForward size={17} />
-                </button>
-              </div>
+              <button type="button" className="mr-deck-orb mr-deck-orb-left" aria-label={isPlaying ? 'Pausar' : 'Reproducir'} onClick={onTogglePlay}>
+                {isPlaying ? <Pause size={19} className="mr-fill" /> : <Play size={19} className="mr-fill" />}
+              </button>
+              <button
+                type="button"
+                className="mr-deck-orb mr-deck-orb-right"
+                aria-label="Pausar"
+                onClick={() => { if (isPlaying) onTogglePlay(); }}
+              >
+                <Pause size={19} className="mr-fill" />
+              </button>
             </div>
           </div>
 
@@ -359,13 +394,17 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
               onTouchEnd={commitSeek}
               onKeyUp={commitSeek}
             />
-            <div className="mr-time-row">
+            <div className="mr-time-single">
               <span>{formatTime(visibleTime)}</span>
+              <span className="mr-time-sep">/</span>
               <span>{formatTime(duration)}</span>
             </div>
           </div>
 
           <div className="mr-tools">
+            <button type="button" className="mr-tool" aria-label="Ver cola" onClick={() => setScreen('queue')}>
+              <ListMusic size={17} />
+            </button>
             <button
               type="button"
               className={`mr-tool ${repeatOn ? 'is-on' : ''}`}
@@ -387,14 +426,10 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
               <button
                 type="button"
                 className={`mr-tool ${playerState.isMuted ? 'is-muted' : ''}`}
-                aria-label={playerState.isMuted ? 'Activar sonido' : 'Silenciar'}
-                onClick={onToggleMute}
-                onDoubleClick={() => setVolumeOpen(open => !open)}
+                aria-label={playerState.isMuted ? 'Activar sonido' : 'Ajustar volumen'}
+                onClick={() => setVolumeOpen(open => !open)}
               >
                 {playerState.isMuted || volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
-              </button>
-              <button type="button" className="mr-volume-pill" onClick={() => setVolumeOpen(open => !open)} aria-label="Ajustar volumen">
-                {volumePercent}%
               </button>
               {volumeOpen && (
                 <div className="mr-volume-pop">
@@ -410,6 +445,9 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
                     onChange={(event) => onVolumeChange(Number(event.target.value))}
                   />
                   <span>{volume}/15</span>
+                  <button type="button" className="mr-volume-mute" onClick={onToggleMute}>
+                    {playerState.isMuted ? 'Activar sonido' : 'Silenciar'}
+                  </button>
                 </div>
               )}
             </div>
@@ -424,8 +462,20 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
             </button>
           </div>
 
+          <div className="mr-transport">
+            <button type="button" className="mr-skip-pill" aria-label="Anterior" onClick={onPreviousTrack}>
+              <SkipBack size={19} />
+            </button>
+            <button type="button" className="mr-main-play" aria-label={isPlaying ? 'Pausar' : 'Reproducir'} onClick={onTogglePlay}>
+              {isPlaying ? <Pause size={25} className="mr-fill" /> : <Play size={25} className="mr-fill" />}
+            </button>
+            <button type="button" className="mr-skip-pill" aria-label="Siguiente" onClick={onNextTrack}>
+              <SkipForward size={19} />
+            </button>
+          </div>
+
           <p className={`mr-status-text ${systemStatus === 'processing' ? 'is-busy' : ''}`}>
-            {systemStatus === 'processing' ? 'Procesando orden…' : isListening ? 'Escuchando…' : 'Control remoto del host'}
+            {systemStatus === 'processing' ? 'Procesando orden…' : isListening ? 'Escuchando…' : ''}
           </p>
         </section>
 
@@ -465,21 +515,6 @@ export const MobileRemoteUI: React.FC<MobileRemoteUIProps> = ({
           </div>
         </section>
       </div>
-
-      <nav className="mr-tabbar" aria-label="Navegación del mando">
-        <button type="button" className={screen === 'queue' ? 'is-active' : ''} onClick={() => setScreen('queue')}>
-          <ListMusic size={20} />
-          <span>Cola</span>
-        </button>
-        <button type="button" className={screen === 'search' ? 'is-active' : ''} onClick={() => setScreen('search')}>
-          <Search size={20} />
-          <span>Buscar</span>
-        </button>
-        <button type="button" className={screen === 'player' ? 'is-active' : ''} onClick={() => setScreen('player')}>
-          <Disc3 size={20} />
-          <span>Reproductor</span>
-        </button>
-      </nav>
     </div>
   );
 };
