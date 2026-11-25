@@ -24,6 +24,7 @@ import { NodeSyncService } from './services/nodeSync';
 import { HostScannerService } from './services/hostScanner';
 import { ChromeMediaService } from './services/chromeMediaService';
 import { OledDrivingDashboard } from './components/OledDrivingDashboard';
+import { MobileRemoteUI } from './components/MobileRemoteUI';
 import { ScreensaverOverlay } from './components/ScreensaverOverlay';
 import { EqualizerModal } from './components/EqualizerModal';
 import { NodeSyncModal } from './components/NodeSyncModal';
@@ -4610,6 +4611,89 @@ export default function App() {
       return { ...prev, ...updates };
     });
   }, []);
+
+  // ── Mando móvil dedicado (QR / ?role=satellite) ──────────────────────────
+  // No usa el dashboard del coche: recibe una interfaz táctil propia, con cola,
+  // vinilo animado y tema claro/oscuro. El host sigue con OledDrivingDashboard.
+  if (nodeRole === 'satellite') {
+    return (
+      <MobileRemoteUI
+        playerState={playerState}
+        playlistQueue={playlistQueue}
+        playlistIndex={playlistIndex}
+        isConnected={isWsConnected}
+        isListening={isListening}
+        systemStatus={systemStatus}
+        onTogglePlay={() => {
+          const nextPlaying = !playerState.isPlaying;
+          setPlayerState(prev => ({ ...prev, isPlaying: nextPlaying }));
+          NodeSyncService.getInstance().sendCommandToMaster({
+            action: nextPlaying ? 'resume' : 'pause'
+          });
+          AudioEngine.getInstance().playBeep('neutral');
+        }}
+        onNextTrack={() => {
+          NodeSyncService.getInstance().sendCommandToMaster({ action: 'next' });
+          AudioEngine.getInstance().playBeep('neutral');
+        }}
+        onPreviousTrack={() => {
+          NodeSyncService.getInstance().sendCommandToMaster({ action: 'previous' });
+          AudioEngine.getInstance().playBeep('neutral');
+        }}
+        onSeek={(time) => {
+          setPlayerState(prev => ({ ...prev, currentTime: time }));
+          NodeSyncService.getInstance().sendCommandToMaster({ action: 'seek', seekTime: time });
+        }}
+        onSelectTrack={handleSelectTrackFromQueue}
+        onEnqueueTrack={(track) => handleEnqueueTracks(track, 'end')}
+        onVolumeChange={(newVol) => {
+          const safeVol = Math.max(0, Math.min(15, newVol));
+          playerStateRef.current = { ...playerStateRef.current, volume: safeVol, isMuted: false };
+          setPlayerState(prev => ({ ...prev, volume: safeVol, isMuted: false }));
+          NodeSyncService.getInstance().sendCommandToMaster({
+            action: 'volume_set',
+            query: `volumen ${safeVol}`,
+            rawQuery: `volumen ${safeVol}`,
+            volumeValue: safeVol,
+            volume: safeVol,
+            value: safeVol
+          });
+        }}
+        onToggleMute={() => {
+          const nextMuted = !playerStateRef.current.isMuted;
+          playerStateRef.current = { ...playerStateRef.current, isMuted: nextMuted };
+          setPlayerState(prev => ({ ...prev, isMuted: nextMuted }));
+          NodeSyncService.getInstance().sendCommandToMaster({
+            action: nextMuted ? 'mute' : 'unmute',
+            query: nextMuted ? 'silencio' : 'activar sonido',
+            rawQuery: nextMuted ? 'silencio' : 'activar sonido'
+          });
+          AudioEngine.getInstance().playBeep(nextMuted ? 'down' : 'up');
+        }}
+        onToggleRepeat={() => {
+          const nextRepeat = playerState.repeatMode === 'none' ? 'one' : 'none';
+          setPlayerState(prev => ({ ...prev, repeatMode: nextRepeat }));
+          NodeSyncService.getInstance().sendCommandToMaster({ action: 'repeat' });
+          AudioEngine.getInstance().playBeep('neutral');
+        }}
+        onToggleNonStop={() => {
+          handleToggleNonStop();
+          NodeSyncService.getInstance().sendCommandToMaster({ action: 'nonstop' });
+          AudioEngine.getInstance().playBeep('neutral');
+        }}
+        onToggleListening={handleToggleListening}
+        onDirectSearch={(query) => {
+          NodeSyncService.getInstance().sendCommandToMaster({
+            action: 'play',
+            query,
+            rawQuery: query
+          });
+          setAssistantResponse(`Enviando al coche: "${query}"`);
+          AudioEngine.getInstance().playBeep('up');
+        }}
+      />
+    );
+  }
 
   return (
     <div className="w-full min-h-screen bg-black text-white font-sans">
