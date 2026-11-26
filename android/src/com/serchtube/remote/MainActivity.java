@@ -13,6 +13,8 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
 import android.text.InputType;
 import android.view.Gravity;
@@ -80,6 +82,10 @@ public class MainActivity extends Activity {
     private SharedPreferences prefs;
     private LinearLayout root;
     private Uri qrOutputUri;
+    private final Handler retryHandler = new Handler(Looper.getMainLooper());
+    private Runnable retryRunnable;
+    private String retryOrigin;
+    private TextView retryStatus;
 
     /** Puente que usa el menú de tres puntos del mando para cambiar de host. */
     private class HostBridge {
@@ -145,7 +151,7 @@ public class MainActivity extends Activity {
                         if (reachable) {
                             showWeb(saved);
                         } else {
-                            discoverHosts(true, null);
+                            discoverHosts(true, saved);
                         }
                     }
                 });
@@ -249,6 +255,7 @@ public class MainActivity extends Activity {
     }
 
     private void showSetup(String message, boolean searching) {
+        stopRetry();
         if (webView != null) {
             View parent = (View) webView.getParent();
             if (parent instanceof ViewGroup) {
@@ -523,6 +530,7 @@ public class MainActivity extends Activity {
     }
 
     private void showWeb(String origin) {
+        stopRetry();
         hideSystemUi();
         webView = new WebView(this);
         webView.setBackgroundColor(BG);
@@ -538,13 +546,14 @@ public class MainActivity extends Activity {
         settings.setUseWideViewPort(true);
         webView.addJavascriptInterface(new HostBridge(), "SerchTubeHost");
 
+        final String hostOrigin = origin;
         webView.setWebChromeClient(new WebChromeClient());
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
                 if (failingUrl != null && failingUrl.equals(view.getUrl())) {
-                    prefs.edit().remove(KEY_HOST).apply();
-                    showSetup("No pude conectar con el host. Verifica la IP y que SerchTube esté abierto.", false);
+                    // Nunca borrar el host guardado por una caída temporal.
+                    showReconnect(hostOrigin, "Se perdió la conexión con el host. Reintentando automáticamente…");
                 }
             }
         });
@@ -552,6 +561,148 @@ public class MainActivity extends Activity {
         String url = origin + (origin.contains("?") ? "&" : "?") + "role=satellite&room=serchtube-master&source=apk";
         webView.loadUrl(url);
         setContentView(webView);
+    }
+
+    private void stopRetry() {
+        retryOrigin = null;
+        if (retryRunnable != null) {
+            retryHandler.removeCallbacks(retryRunnable);
+            retryRunnable = null;
+        }
+        retryStatus = null;
+    }
+
+    /**
+     * Pantalla de reconexión: conserva el host, reintenta solo y permite
+     * buscar otro host o escanear el QR sin perder la configuración.
+     */
+    private void showReconnect(final String origin, String message) {
+        stopRetry();
+        retryOrigin = origin;
+
+        if (webView != null) {
+            View parent = (View) webView.getParent();
+            if (parent instanceof ViewGroup) {
+                ((ViewGroup) parent).removeView(webView);
+            }
+            webView.destroy();
+            webView = null;
+        }
+
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setGravity(Gravity.CENTER_HORIZONTAL);
+        container.setBackgroundColor(BG);
+        container.setPadding(dp(26), dp(44), dp(26), dp(24));
+
+        TextView title = new TextView(this);
+        title.setText("Reconectando…");
+        title.setTextColor(FG);
+        title.setTextSize(28);
+        title.setTypeface(title.getTypeface(), android.graphics.Typeface.BOLD);
+        title.setGravity(Gravity.CENTER);
+        container.addView(title);
+
+        retryStatus = new TextView(this);
+        retryStatus.setText(message);
+        retryStatus.setTextColor(MUTED);
+        retryStatus.setTextSize(13);
+        retryStatus.setGravity(Gravity.CENTER);
+        retryStatus.setPadding(0, dp(10), 0, dp(24));
+        container.addView(retryStatus);
+
+        Button retry = new Button(this);
+        retry.setText("Reintentar ahora");
+        retry.setAllCaps(false);
+        retry.setTextSize(14);
+        retry.setTextColor(Color.WHITE);
+        retry.setBackgroundColor(Color.rgb(23, 21, 29));
+        retry.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                tryReconnectNow();
+            }
+        });
+        container.addView(retry, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        Button scan = new Button(this);
+        scan.setText("Escanear QR del host");
+        scan.setAllCaps(false);
+        scan.setTextSize(12);
+        scan.setTextColor(FG);
+        scan.setBackgroundColor(Color.rgb(35, 50, 74));
+        scan.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                scanHostQr();
+            }
+        });
+        LinearLayout.LayoutParams scanParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        scanParams.topMargin = dp(10);
+        container.addView(scan, scanParams);
+
+        Button other = new Button(this);
+        other.setText("Buscar otro host");
+        other.setAllCaps(false);
+        other.setTextSize(12);
+        other.setTextColor(MUTED);
+        other.setBackgroundColor(Color.TRANSPARENT);
+        other.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                discoverHosts(false, null);
+            }
+        });
+        container.addView(other);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(BG);
+        scroll.addView(container);
+        setContentView(scroll);
+
+        scheduleRetry(1800);
+    }
+
+    private void scheduleRetry(long delayMs) {
+        if (retryOrigin == null) return;
+        if (retryRunnable != null) retryHandler.removeCallbacks(retryRunnable);
+        retryRunnable = new Runnable() {
+            @Override
+            public void run() {
+                tryReconnectNow();
+            }
+        };
+        retryHandler.postDelayed(retryRunnable, delayMs);
+    }
+
+    private void tryReconnectNow() {
+        final String origin = retryOrigin;
+        if (origin == null) return;
+        if (retryStatus != null) retryStatus.setText("Comprobando conexión con " + origin + "…");
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                final boolean reachable = probeOrigin(origin);
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (retryOrigin == null) return;
+                        if (reachable) {
+                            prefs.edit().putString(KEY_HOST, origin).apply();
+                            showWeb(origin);
+                        } else {
+                            if (retryStatus != null) {
+                                retryStatus.setText("El host no responde. Se reintentará automáticamente…");
+                            }
+                            scheduleRetry(4000);
+                        }
+                    }
+                });
+            }
+        }).start();
     }
 
     /**
@@ -618,7 +769,12 @@ public class MainActivity extends Activity {
                                 prefs.edit().putString(KEY_HOST, origin).apply();
                                 showWeb(origin);
                             } else {
-                                showSetup("No pude encontrar el host automáticamente. Escribe su IP.", false);
+                                String saved = prefs.getString(KEY_HOST, "");
+                                if (saved != null && saved.length() > 0) {
+                                    showReconnect(saved, "El host no responde. Se reintentará automáticamente…");
+                                } else {
+                                    showSetup("No pude encontrar el host automáticamente. Escribe su IP.", false);
+                                }
                             }
                         } else {
                             String message = found.isEmpty()
@@ -634,6 +790,7 @@ public class MainActivity extends Activity {
 
     /** Lista de hosts encontrados; no conecta hasta que el usuario toca uno. */
     private void showHostList(List<String> hosts, String message) {
+        stopRetry();
         if (webView != null) {
             View parent = (View) webView.getParent();
             if (parent instanceof ViewGroup) {
@@ -801,10 +958,27 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        stopRetry();
         if (webView != null) {
             webView.destroy();
             webView = null;
         }
         super.onDestroy();
+    }
+
+    @Override
+    protected void onPause() {
+        if (webView != null) webView.onPause();
+        super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        hideSystemUi();
+        if (webView != null) {
+            webView.onResume();
+            webView.resumeTimers();
+        }
     }
 }

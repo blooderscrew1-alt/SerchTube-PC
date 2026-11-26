@@ -11,6 +11,8 @@ Contenedor nativo mínimo para el mando de SerchTube.
   - Buscar otro host y elegir de una lista (sin conectar automáticamente).
   - Ingresar la IP manualmente.
 - Comprueba al iniciar si hay una versión nueva en GitHub y solo muestra un aviso si existe.
+- Conserva el host guardado al cerrar la app o perder la conexión.
+- Si el host no responde, muestra “Reconectando…” y reintenta solo cada pocos segundos; no vuelve a pedir escanear el QR.
 - Guarda la IP para abrir directo las próximas veces.
 - No requiere HTTPS ni instalar la PWA.
 
